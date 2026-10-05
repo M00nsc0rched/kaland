@@ -1,0 +1,5 @@
+# a könyvek nem kerülhetnek a nyilvános tárolóba
+*.pdf
+*.kjk.json
+tortenetek/
+_*.html

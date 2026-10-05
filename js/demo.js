@@ -1,0 +1,35 @@
+// Beépített próbakaland (saját szöveg), hogy a játék könyv nélkül is kipróbálható legyen.
+// Minden mechanikát bemutat: szerencse- és ügyességpróba, kockadobás, harc egy és két ellenféllel,
+// tárgy, arany, élelem, számra lapozás, halál és győzelem.
+export const DEMO = {
+  format: 'kjk-book', v: 1, id: 'demo-solyomko', title: 'A Sólyomkő-torony (próbakaland)', source: 'beépített', importedAt: '2026-10-04T00:00:00Z', max: 16, demo: true,
+  front: [
+    { h: 'Bevezetés' },
+    { p: 'Ez egy rövid próbakaland, amelyen kipróbálhatod a játék minden funkcióját, mielőtt betöltenél egy igazi Kaland Játék Kockázat könyvet.' },
+    { p: 'Dobj egy kockával, adj hozzá 6-ot: ez az ÜGYESSÉG pontszámod. Dobj két kockával, adj hozzá 12-t: ez az ÉLETERŐ. Dobj egy kockával, adj hozzá 6-ot: ez a SZERENCSE. A játék ezt elvégzi helyetted.' },
+    { h: 'Felszerelés' },
+    { p: 'Van egy kardod és egy bőrvérted. Kezdetben 5 Aranytallérod van. Hátizsákodban három étkezésre elegendő élelmiszer van. Minden étkezés 4 pontot ad ÉLETERŐ pontjaidhoz.' },
+    { p: 'Magaddal vihetsz egy palackot az alábbiak közül: az Ügyesség Itala, az Erő Itala vagy a Szerencse Itala.' },
+    { h: 'Háttértörténet' },
+    { p: 'A Sólyomkő-torony gazdája évek óta nem mutatkozott. A falu vénjei azt beszélik, hogy a toronyban kincs vár arra, aki elég bátor és elég szerencsés. Hajnalban indulsz útnak. És most lapozz!' },
+  ],
+  sections: {
+    1: ['A torony kapuja nyitva áll. Odabent két út kínálkozik: balra egy vasalt ajtó, jobbra egy csigalépcső vezet felfelé.', 'Ha a vasalt ajtón lépsz be, lapozz a 2-re. Ha a lépcsőn indulsz felfelé, lapozz a 3-ra.'],
+    2: ['Kis kamrába érsz. Egy polcon 5 Aranytallért találsz, mellette egy apró Rézkulcs hever. Elteszed a Rézkulcsot (írd fel a Kalandlapodra). A sarokban egy adag élelmet is találsz, amit a hátizsákodba teszel.', 'Visszamész a csarnokba, majd a lépcsőn indulsz felfelé. Lapozz a 4-re.'],
+    3: ['A harmadik lépcsőfok enged a lábad alatt: csapda! Tedd próbára SZERENCSÉDET! Ha szerencsés vagy, lapozz a 4-re. Ha nincs szerencséd, lapozz az 5-re.'],
+    4: ['A lépcső tetején egy Goblin őr vár rád. Rozsdás szablyáját rázza, és rád ront.', 'Goblin ÜGYESSÉG 6 ÉLETERŐ 5', 'Ha legyőzöd, lapozz a 6-ra. Ha akarsz, Elmenekülhetsz a sötét folyosón: lapozz a 7-re.'],
+    5: ['A lépcső hirtelen csúszdává simul, és lebucskázol rajta. Vesztesz 3 ÉLETERŐ pontot.', 'Feltápászkodsz, és újra nekivágsz a lépcsőnek. Lapozz a 4-re.'],
+    6: ['A Goblin mögött egy vasalt láda áll, rajta erős lakat. Ha van nálad Rézkulcs, lapozz a 8-ra. Ha nincs, lapozz a 9-re.'],
+    7: ['A folyosón vaksötét van, és csak tapogatózva haladsz. Dobj egy kockával! Ha az eredmény 1–3, lapozz a 10-re. Ha 4–6, lapozz a 9-re.'],
+    8: ['A kulcs illik a zárba. A ládában egy Gyógyital van, és egy ezüstös amulett, ami melegséggel tölt el. Nyersz 2 SZERENCSE pontot. A Gyógyitalt elteszed: ha harcon kívül megiszod, 4 ÉLETERŐ pontot fog visszaállítani.', 'Továbbmész. Lapozz a 9-re.'],
+    9: ['Egy keskeny kőhíd ível át egy mély szakadék fölött. Tedd próbára ÜGYESSÉGEDET! Ha a próba sikeres, lapozz a 11-re; ha sikertelen, lapozz a 12-re.'],
+    10: ['A sötétben egy pókverembe lépsz. Mielőtt bármit tehetnél, a hálók foglyul ejtenek, és a pókok lakomája leszel. Kalandod itt véget ér.'],
+    11: ['A híd túloldalán két őr áll egy ajtó előtt. Egyszerre támadnak rád.', 'ÜGYESSÉG ÉLETERŐ', 'Első Őr 7 6', 'Második Őr 6 6', 'Ha mindkettőjüket legyőzöd, lapozz a 13-ra.'],
+    12: ['Megcsúszol, és csak az utolsó pillanatban kapaszkodsz meg a híd szélében. Vesztesz 4 ÉLETERŐ pontot. Ha túlélted, felhúzod magad, és átjutsz. Lapozz a 11-re.'],
+    13: ['Az ajtón ez a felirat áll: „Hét meg hét a kulcs.” Ha tudod a megfejtést, lapozz az annak megfelelő fejezetpontra. Ha nem tudod, lapozz a 15-re.'],
+    14: ['A felirat felizzik, és az ajtó hangtalanul kitárul. Lapozz a 16-ra.'],
+    15: ['Rossz helyre nyúlsz: a padló kinyílik alattad, és a mélybe zuhansz. Kalandod itt véget ér.'],
+    16: ['A torony csúcsán a régi gazda kincsesládája vár: arany, drágakövek és egy sólyomtollas sisak. A falu ünnepelni fog. Győztél!'],
+  },
+  appendix: [], warnings: [],
+};
