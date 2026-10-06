@@ -17,7 +17,17 @@ export function ocrNumber(raw) {
   return out ? parseInt(out, 10) : null;
 }
 
-const median = a => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+// Az OCR-olvasat a várt szám torzulása-e? (egy jegy eltér, vagy egy betoldott jegy: „92.”→82, „1838.”→188)
+function nearNum(raw, expected) {
+  const d = String(raw).split('').map(ch => (ch >= '0' && ch <= '9') ? ch : (DIGITISH[ch] || '')).join(''), e = String(expected);
+  if (!d) return false;
+  if (d === e) return true;
+  if (d.length === e.length) { let diff = 0; for (let i = 0; i < d.length; i++) if (d[i] !== e[i]) diff++; return diff <= 1; }
+  if (d.length === e.length + 1) { for (let i = 0; i < d.length; i++) if (d.slice(0, i) + d.slice(i + 1) === e) return true; }
+  return false;
+}
+
+const median = a =>{ if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
 const pct = (a, p) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.max(0, Math.round((s.length - 1) * p)))]; };
 
 function pageMetrics(page, fallback) {
@@ -39,6 +49,8 @@ function classify(page, m) {
   const out = [];
   const colW = m.colR - m.colL, colC = (m.colL + m.colR) / 2;
   let head = null;
+  const boxes = []; // a valódi szövegnek elfogadott sorok dobozai (az illusztráció-kereséshez)
+  const keep = b => boxes.push(b);
   for (const l0 of page.lines) {
     let l = l0;
     // „, 394.” – az illusztrációból átcsúszott írásjel-szemét a fejléc előtt: a szavak dobozából vágjuk le
@@ -54,14 +66,14 @@ function classify(page, m) {
     const top = y0 < page.H * 0.085, bottom = y0 > page.H * 0.9;
     if (top && RUNHEAD.test(t.replace(/\s/g, '')) && l.c >= 40) {
       const parts = t.replace(/\s/g, '').split(/[-–—]/).map(ocrNumber);
-      if (parts.every(x => x != null)) { head = { from: parts[0], to: parts[parts.length - 1] }; continue; }
+      if (parts.every(x => x != null)) { head = { from: parts[0], to: parts[parts.length - 1] }; keep(l.b); continue; }
     }
-    if ((bottom || top) && /^\d{1,3}$/.test(t) && w < m.medH * 2.2) continue; // oldalszám
+    if ((bottom || top) && /^\d{1,3}$/.test(t) && w < m.medH * 2.2) { keep(l.b); continue; } // oldalszám
     const centered = Math.abs(cx - colC) < Math.max(40, colW * 0.06);
     // fejezetpont-fejléc: rövid, középre zárt, szám(+pont)
-    if (centered && w < m.medH * 4.5 && h < m.medH * 1.8 && /\d/.test(t) && /^[\dlIOoSBZzGgqA|!$\]\[ŐőT]{1,3}\s*[.,]$/.test(t)) {
+    if (centered && w < m.medH * 4.5 && h < m.medH * 1.8 && /\d/.test(t) && /^[\dlIOoSBZzGgqA|!$\]\[ŐőT]{1,4}\s*[.,]$/.test(t)) {
       const num = ocrNumber(t);
-      if (num != null) { out.push({ kind: 'hdr', num, raw: t, conf: l.c, y: y0 }); continue; }
+      if (num != null) { out.push({ kind: 'hdr', num, raw: t, conf: l.c, y: y0 }); if (l.c >= 50) keep(l.b); continue; }
     }
     // illusztráció-szemét kiszűrése
     if (l.c < 50) continue;
@@ -82,8 +94,19 @@ function classify(page, m) {
     if (l.c < 80 && !/[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{3,}/.test(t) && !(aligned && /\d\S*-?(?:r[ae]|hoz|hez|höz)\b/.test(t))) continue;
     const isTitle = centered && !aligned && w < colW * 0.8 && l.c >= 80 && x0 > m.colL + m.medH * 1.5;
     out.push({ kind: isTitle ? 'title' : 'text', t, x0, x1, y: y0, conf: l.c, indent: x0 - m.colL, short: x1 < m.colR - m.medH * 1.4, medH: m.medH });
+    keep(l.b);
   }
-  return { items: out, head };
+  // illusztrációk (az importáló vágja ki őket): olvasási sorrendbe illesztve
+  for (const f of page.figs || []) out.push({ kind: 'fig', y: f.y0, img: f.img, w: f.w, h: f.h });
+  out.sort((a, b) => a.y - b.y);
+  return { items: out, head, boxes, medH: m.medH, colL: m.colL, colR: m.colR };
+}
+
+// Egy oldal szövegsorainak dobozai (a többi tintás terület illusztráció lehet).
+export function textBoxes(page) {
+  const m = pageMetrics(page, null);
+  const r = classify({ ...page, figs: [] }, m);
+  return { boxes: r.boxes, medH: m.medH, colL: m.colL, colR: m.colR };
 }
 
 const UP = 'A-ZÁÉÍÓÖŐÚÜŰ', LO = 'a-záéíóöőúüű';
@@ -144,12 +167,12 @@ function cleanStat(t, isHead) {
 // Gyakori OCR-torzulások a játékszavakban (kiskapitális ÜGYESSÉG/SZERENCSE stb.).
 export function normalizeOcr(s) {
   return s
-    .replace(/(^|[\s(„"])([ÜüÖöUu0O][GgCc]{0,2}[cCxXrR]?[yYgG]{0,2}[Ee][Ss]{1,3}[ÉéEe][Gg])([A-ZÁÉÍÓÖŐÚÜŰa-záéíóöőúüű]*)/g, (m, pre, core, suf) => {
+    .replace(/(^|[\s(„"])([ÜüÖöUu0O]{1,2}[GgCc]{0,2}[cCxXrR]?[yYgG]{0,2}[Ee][Ss]{1,3}[ÉéEe][Gg])([A-ZÁÉÍÓÖŐÚÜŰa-záéíóöőúüű]*)/g, (m, pre, core, suf) => {
       // csak a „kiskapitális” torzulásokat javítjuk; a sima „ügyesség”/„Ügyesség” szó marad
       if ((core.slice(1).match(/[A-ZÁÉÍÓÖŐÚÜŰ]/g) || []).length < 2) return m;
       return pre + 'ÜGYESSÉG' + suf.toUpperCase();
     })
-    .replace(/(^|[\s(„"])[Ss][Zz]{1,2}E?(?=[Ee]?RENCS)/g, '$1SZE')
+    .replace(/(^|[\s(„"])[Ss][Zz]{1,2}[Ee]?(?=[Ee]?RENCS)/g, '$1SZE')
     .replace(/SZEERENCS/g, 'SZERENCS')
     .replace(/\bK(ezd[eé]n|ezderi|ezderni)\b/g, 'Kezdeti')
     .replace(/(^|\s)[\]\[|lI](?=\s+(?:ÜGYESSÉG|ÉLETERŐ|SZERENCSE|pont|Arany|adag))/g, '$11');
@@ -173,7 +196,9 @@ export function buildBook(pages, opts = {}) {
   const appendixPages = [];
   let state = 'pre', cur = 0, curLines = [], frontLines = [], lastSeenHead = null;
   let fallback = null, headsSeen = 0, tail = null; // tail: fej nélküli oldalak pufferje (lehet hátsó anyag)
-  const flush = () => { if (cur > 0) { const paras = joinLines(curLines).map(p => p.t); sections[cur] = (sections[cur] || []).concat(paras); } curLines = []; };
+  const figs = {}; // fejezetpont → illusztrációk (abban a pontban állnak, amelyik szövege előttük van)
+  const addFig = (n, f) => { if (n > 0) (figs[n] = figs[n] || []).push({ img: f.img, w: f.w, h: f.h }); };
+  const flush =() => { if (cur > 0) { const paras = joinLines(curLines).map(p => p.t); sections[cur] = (sections[cur] || []).concat(paras); } curLines = []; };
   for (const page of pages) {
     const m = pageMetrics(page, fallback);
     if (m.wideCount >= 3) fallback = { medH: m.medH, colL: m.colL, colR: m.colR };
@@ -184,22 +209,24 @@ export function buildBook(pages, opts = {}) {
       const firstHdr = hdrs.find(h => h.num === 1);
       const pre = firstHdr ? items.filter(i => i.y < firstHdr.y) : items;
       const proseLines = pre.filter(i => i.kind === 'text' && (i.x1 - i.x0) > (m.colR - m.colL) * 0.6).length;
-      if (proseLines >= 4 || (frontLines.length && proseLines >= 1)) frontLines.push(...pre.filter(i => i.kind !== 'hdr'));
+      if (proseLines >= 4 || (frontLines.length && proseLines >= 1)) frontLines.push(...pre.filter(i => i.kind !== 'hdr' && i.kind !== 'fig'));
       if (!firstHdr) continue;
       state = 'sec';
     } else if (!head && !hdrs.length && headsSeen >= 10) {
       // oldalfej nélküli oldal egy oldalfejes könyvben: illusztráció vagy hátsó anyag – pufferbe
-      if (!tail) tail = { lines: [], pages: [] };
+      if (!tail) tail = { lines: [], pages: [], figs: [] };
       // fej nélküli oldalról csak a biztosan felismert sorok jöhetnek (az illusztrációk zaja nem)
-      tail.lines.push(...items.filter(i => i.kind !== 'hdr' && i.conf >= 85));
+      tail.lines.push(...items.filter(i => (i.kind === 'text' || i.kind === 'title') && i.conf >= 85));
+      tail.figs.push(...items.filter(i => i.kind === 'fig'));
       tail.pages.push(page);
       continue;
     }
     if (head) headsSeen++;
     if (tail) {
-      // mégis folytatódik a könyv: a pufferelt sorok a folyó ponthoz tartoztak
+      // mégis folytatódik a könyv: a pufferelt sorok (és egész oldalas képek) a folyó ponthoz tartoztak
       if (tail.lines.length) warnings.push(`p${tail.pages.map(p => p.n).join(',')}: oldalfej nélküli oldal(ak) a(z) ${cur}. ponthoz csatolva`);
       curLines.push(...tail.lines);
+      for (const f of tail.figs) addFig(cur, f);
       tail = null;
     }
     if (head) {
@@ -208,15 +235,18 @@ export function buildBook(pages, opts = {}) {
     }
     for (const it of items) {
       if (state === 'pre') { if (it.kind === 'hdr' && it.num === 1) { state = 'sec'; } else continue; }
+      if (it.kind === 'fig') { addFig(cur, it); continue; }
       if (it.kind === 'hdr') {
         if (state === 'pre' || (cur === 0 && it.num !== 1)) continue;
         let n = it.num;
         const expected = cur + 1;
         if (n !== expected) {
           const inHead = head && n >= head.from && n <= head.to;
+          const near = nearNum(it.raw, expected);
+          if (it.conf < 50 && !near) { warnings.push(`p${page.n}: bizonytalan '${it.raw}' kihagyva`); continue; } // illusztráció része
           if (n > expected && n <= expected + 2 && inHead) {
             warnings.push(`p${page.n}: hiányzó fejezetpont(ok) ${expected}…${n - 1} ('${it.raw}' előtt)`);
-          } else if (head && expected >= head.from && expected <= head.to) {
+          } else if (near && (!head || (expected >= head.from && expected <= head.to))) {
             warnings.push(`p${page.n}: fejléc '${it.raw}' (${n}) → ${expected} javítva`);
             n = expected;
           } else if (n > expected && n <= expected + 2 && !head) {
@@ -245,7 +275,8 @@ export function buildBook(pages, opts = {}) {
   const missing = [];
   for (let k = 1; k <= max; k++) if (!sections[k]) missing.push(k);
   if (missing.length) warnings.push(`hiányzó fejezetpontok: ${missing.join(', ')}`);
-  return { front, sections, max, warnings, appendixPages };
+  for (const k of Object.keys(figs)) if (!sections[k]) delete figs[k];
+  return { front, sections, max, warnings, appendixPages, figs };
 }
 
 // PDF szövegréteg → ugyanaz a sor-alak, mint az OCR-é (conf = 100).
@@ -254,7 +285,9 @@ export function textItemsToLines(items, viewport, scale) {
   for (const it of items) {
     if (!it.str || !it.str.trim()) continue;
     const tx = it.transform;
-    const x = tx[4] * scale, yBase = (viewport.height - tx[5]) * scale;
+    // a nézet transzformációja kezeli a CropBox-eltolást és az oldalforgatást is
+    const pt = viewport.convertToViewportPoint ? viewport.convertToViewportPoint(tx[4], tx[5]) : [tx[4], viewport.height - tx[5]];
+    const x = pt[0] * scale, yBase = pt[1] * scale;
     const h = Math.max(4, Math.hypot(tx[2], tx[3]) * scale);
     const w = (it.width || it.str.length * h * 0.5) * scale;
     let row = rows.find(r => Math.abs(r.yBase - yBase) < h * 0.45);

@@ -32,13 +32,16 @@ function tx(db, mode, fn) {
   });
 }
 
+// Igazat ad vissza, ha a könyv tartósan (IndexedDB-ben) elmentődött; különben csak erre a munkamenetre él.
 export async function putBook(book) {
   memBooks.set(book.id, book);
   const db = await open();
-  if (db) { try { await tx(db, 'readwrite', st => st.put(book)); } catch (e) { console.warn('putBook', e); } }
+  let ok = false;
+  if (db) { try { await tx(db, 'readwrite', st => st.put(book)); ok = true; } catch (e) { console.warn('putBook', e); } }
   const meta = listMetaSync().filter(m => m.id !== book.id);
-  meta.unshift({ id: book.id, title: book.title, max: book.max, importedAt: book.importedAt, source: book.source });
+  meta.unshift(metaOf(book));
   lsSet('kjk:books', meta);
+  return ok;
 }
 
 export async function getBook(id) {
@@ -64,11 +67,12 @@ export async function listBooks() {
     const keys = await tx(db, 'readonly', st => st.getAllKeys());
     // a localStorage-lista lehet hiányos (törölt adatok) – az IndexedDB az irányadó
     const known = new Set(meta.map(m => m.id));
-    for (const k of keys || []) if (!known.has(k)) { const b = await getBook(k); if (b) meta.push({ id: b.id, title: b.title, max: b.max, importedAt: b.importedAt, source: b.source }); }
+    for (const k of keys || []) if (!known.has(k)) { const b = await getBook(k); if (b) meta.push(metaOf(b)); }
     return meta.filter(m => (keys || []).includes(m.id) || memBooks.has(m.id));
   } catch { return meta; }
 }
 function listMetaSync() { return lsGet('kjk:books', []); }
+const metaOf = b => ({ id: b.id, title: b.title, max: b.max, importedAt: b.importedAt, source: b.source, cover: b.cover || null, figs: b.figs ? Object.values(b.figs).reduce((a, x) => a + x.length, 0) : 0 });
 
 export const loadSave = id => lsGet('kjk:save:' + id, null);
 export const writeSave = (id, s) => lsSet('kjk:save:' + id, s);

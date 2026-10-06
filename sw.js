@@ -1,6 +1,6 @@
 // Offline-működés: az alkalmazás fájljai a gyorsítótárból indulnak, a háttérben frissülnek.
 // Új kiadásnál a VERSION értékét növelni kell.
-const VERSION = 'kjk-v1';
+const VERSION = 'kjk-v2';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/analyze.js', 'js/rules.js', 'js/store.js', 'js/importer.js', 'js/layout.js', 'js/demo.js',

@@ -92,28 +92,51 @@ async function newRound(reason) {
 // ---------- lapozás ----------
 function enterSection(n, how, label) {
   const sv = S.save, book = S.book;
-  if (!book.sections[n]) { toast(`A(z) ${n}. fejezetpont nem létezik ebben a könyvben.`); return; }
-  const from = sv.n;
+  if (!book.sections[n]) { toast(`A(z) ${n}. fejezetpont nem létezik ebben a könyvben.`); return false; }
+  const from = sv.n, leaving = sv.sec;
+  // visszalapozásnál („ahonnan idelapoztál”) a korábbi pont állapota visszaáll: a hatások nem ismétlődnek
+  const restore = how === 'back' && sv.prevSec && sv.prevSec.n === n ? sv.prevSec : null;
+  if (leaving) parkSuggestions(leaving);
+  sv.prevSec = leaving || null;
+  if (how !== 'jump' && how !== 'use') sv.undo = null;
   sv.n = n; sv.trail.push(n); if (!sv.seen.includes(n)) sv.seen.push(n);
   const a = A(n);
-  sv.sec = { n, from, applied: {}, tests: {}, combat: null, sel: null, manual: false, sugs: {}, round: 0 };
   const via = how === 'start' ? 'A kaland kezdete' : how === 'jump' ? 'Kézi lapozás' : how === 'back' ? 'Visszalapozás' : how === 'use' ? 'Tárgyhasználat' : 'Lapozás';
   log('sec', `${via}: ${n}. fejezetpont` + (label ? ` („${label.slice(0, 80)}”)` : ''));
+  if (restore) { sv.sec = { ...restore, sel: null, ready: null, from }; persist(); render(); scrollTop(); return true; }
+  sv.sec = { n, from, applied: {}, undone: {}, tests: {}, combat: null, sel: null, ready: null, manual: false, sugs: {} };
   if (a.enemies.length) {
     const m = a.combat.mods || {};
-    sv.sec.combat = { enemies: a.enemies.map(e => ({ name: e.name, skill: e.skill, stamina: e.stamina, max: e.stamina, dead: false })), mode: a.combat.mode, mods: { skill: m.skill || 0, dmgToPlayer: m.dmgToPlayer || 2, dmgToEnemy: m.dmgToEnemy ?? 2 }, target: 0, rounds: [], last: null, over: false, won: false };
+    sv.sec.combat = { enemies: a.enemies.map(e => ({ name: e.name, skill: e.skill, stamina: e.stamina, max: e.stamina, dead: false })), mode: a.combat.mode, mods: { skill: m.skill || 0, dmgToPlayer: m.dmgToPlayer || 2, dmgToEnemy: m.dmgToEnemy ?? 2 }, target: 0, rounds: [], last: null, over: false, won: false, lethal: null };
   }
-  // feltétel nélküli hatások automatikusan
-  if (S.settings.autoEffects) a.effects.forEach((e, i) => { if (!e.cond && !e.when && e.choice == null) applyEffect(e, i); });
+  if (S.settings.autoEffects) {
+    // feltétel nélküli hatások automatikusan (visszavonhatók)
+    a.effects.forEach((e, i) => { if (!e.cond && !e.when && e.choice == null) applyEffect(e, i); });
+    // a megszerzett tárgyak is felkerülnek (névvel; átnevezhető, törölhető)
+    a.suggestions.forEach((s, i) => { if ((s.type === 'item' || s.type === 'ability') && !s.cond && s.name) sv.sec.sugs[i] = addItem(s.name, s.type, null, true); });
+  }
   if (a.victory) { sv.status = 'won'; sv.history.push({ round: sv.round, result: 'győzelem', at: n }); log('win', `Győzelem! A(z) ${sv.round}. kör sikeresen véget ért (${sv.trail.length} fejezetpont).`); }
-  else if (a.death && sv.status === 'play') die(a.deathHint ? 'A történet itt véget ért: elbuktál.' : 'A történet itt véget ért.', true);
+  else if (a.death && sv.status === 'play') die('A történet itt véget ért: elbuktál.', true);
   persist(); render(); scrollTop();
+  return true;
+}
+// a pontban fel nem írt tárgy-/jegyzetjavaslatok nem vesznek el: a Tárgyak lapon „Felírandó” listába kerülnek
+function parkSuggestions(sec) {
+  const sv = S.save; if (!sec || !sec.n || !S.book.sections[sec.n]) return;
+  const a = A(sec.n);
+  sv.pending = sv.pending || [];
+  a.suggestions.forEach((s, i) => {
+    if (sec.sugs && sec.sugs[i]) return;
+    if (!['item', 'ability', 'note', 'use'].includes(s.type)) return;
+    if (sv.pending.some(p => p.n === sec.n && p.text === s.text)) return;
+    sv.pending.push({ id: uid(), n: sec.n, type: s.type, name: s.name || '', text: s.text, target: s.target || null, offset: s.offset || null });
+  });
 }
 function confirmChoice(i) {
   const sv = S.save, a = A(sv.n), c = a.choices[i];
   if (!c) return;
-  // a választáshoz kötött költség/hatás (pl. „Ha fizetsz 5 Aranytallért…”)
-  a.effects.forEach((e, k) => { if (e.choice === i && !sv.sec.applied[k]) applyEffect(e, k); });
+  // a választáshoz kötött költség/hatás (pl. „Ha fizetsz 5 Aranytallért…”) – a visszavontat nem alkalmazzuk újra
+  a.effects.forEach((e, k) => { if (e.choice === i && sv.sec.applied[k] == null && !(sv.sec.undone && sv.sec.undone[k])) applyEffect(e, k); });
   if (sv.status !== 'play') return render();
   log('choice', `Választás (${i + 1}): ${cap1(c.label) || 'Tovább'}`);
   if (c.kind === 'back') {
@@ -126,6 +149,7 @@ function confirmChoice(i) {
 }
 function onKey(i) {
   const sv = S.save; if (!sv || sv.status !== 'play') return;
+  if (sv.sec.combat && sv.sec.combat.lethal) { toast('Előbb döntsd el: szerencsepróbával enyhíted a sebet, vagy elfogadod.'); pulseActs(); return; }
   const st = choiceState(i);
   if (st.locked) { sv.sec.sel = i; render(); pulseActs(); return; }
   if (sv.sec.sel === i) {
@@ -164,26 +188,41 @@ function changeStat(stat, delta, why, opts = {}) {
   const real = after - before;
   if (real || delta) log(delta < 0 ? 'hurt' : 'gain', `${STAT_NAMES[stat]} ${signed(delta)}${real !== delta ? ` (ténylegesen ${signed(real)})` : ''} → ${after}` + (why ? ` – ${why}` : ''));
   flashStat(stat);
-  if (stat === 'stamina' && after <= 0 && S.save.status === 'play') die('Elfogyott az ÉLETERŐD.');
+  if (stat === 'stamina' && after <= 0 && S.save.status === 'play' && !opts.deferDeath) die('Elfogyott az ÉLETERŐD.');
   return real;
 }
 function applyEffect(e, idx) {
   const sv = S.save; if (!sv || sv.sec.applied[idx] != null) return;
-  let real = 0;
-  if (e.type === 'stat') real = changeStat(e.stat, e.delta, `„${e.text}”`);
-  else if (e.type === 'initial') { const k = e.stat + 'Init'; sv.c[k] = Math.max(0, sv.c[k] + e.delta); if (e.delta < 0) sv.c[e.stat] = Math.min(sv.c[e.stat], sv.c[k]); else sv.c[e.stat] += e.delta; real = e.delta; log(e.delta < 0 ? 'hurt' : 'gain', `Kezdeti ${STAT_NAMES[e.stat]} ${signed(e.delta)} → ${sv.c[k]}`); flashStat(e.stat); }
-  else if (e.type === 'gold') { const before = sv.gold; sv.gold = Math.max(0, sv.gold + e.delta); real = sv.gold - before; log(e.delta < 0 ? 'hurt' : 'gain', `Arany ${signed(e.delta)} → ${sv.gold}` + (real !== e.delta ? ' (nem volt elég)' : '')); }
-  else if (e.type === 'food') { const before = sv.food; sv.food = Math.max(0, sv.food + e.delta); real = sv.food - before; log(e.delta < 0 ? 'hurt' : 'gain', `Élelem ${signed(e.delta)} adag → ${sv.food}`); }
-  sv.sec.applied[idx] = real;
+  let rec = 0;
+  if (e.type === 'stat') rec = changeStat(e.stat, e.delta, `„${e.text}”`);
+  else if (e.type === 'initial') {
+    const k = e.stat + 'Init';
+    sv.c[k] = Math.max(0, sv.c[k] + e.delta);
+    let clamp = 0;
+    if (e.delta < 0) { clamp = Math.max(0, sv.c[e.stat] - sv.c[k]); sv.c[e.stat] -= clamp; } else sv.c[e.stat] += e.delta;
+    rec = { real: e.delta, clamp };
+    log(e.delta < 0 ? 'hurt' : 'gain', `Kezdeti ${STAT_NAMES[e.stat]} ${signed(e.delta)} → ${sv.c[k]}`); flashStat(e.stat);
+  }
+  else if (e.type === 'gold') { const before = sv.gold; sv.gold = Math.max(0, sv.gold + e.delta); rec = sv.gold - before; log(e.delta < 0 ? 'hurt' : 'gain', `Arany ${signed(e.delta)} → ${sv.gold}` + (rec !== e.delta ? ' (nem volt elég)' : '')); }
+  else if (e.type === 'food') { const before = sv.food; sv.food = Math.max(0, sv.food + e.delta); rec = sv.food - before; log(e.delta < 0 ? 'hurt' : 'gain', `Élelem ${signed(e.delta)} adag → ${sv.food}`); }
+  sv.sec.applied[idx] = rec;
+  if (sv.sec.undone) delete sv.sec.undone[idx];
 }
 function undoEffect(e, idx) {
-  const sv = S.save, real = sv.sec.applied[idx]; if (real == null) return;
-  if (e.type === 'stat') { sv.c[e.stat] = Math.max(0, sv.c[e.stat] - real); flashStat(e.stat); }
-  else if (e.type === 'initial') { sv.c[e.stat + 'Init'] -= real; if (real > 0) sv.c[e.stat] -= real; }
-  else if (e.type === 'gold') sv.gold = Math.max(0, sv.gold - real);
-  else if (e.type === 'food') sv.food = Math.max(0, sv.food - real);
+  const sv = S.save, rec = sv.sec.applied[idx]; if (rec == null) return;
   delete sv.sec.applied[idx];
+  (sv.sec.undone = sv.sec.undone || {})[idx] = true;
   log('manual', `Visszavonva: ${effLabel(e)}`);
+  // a pontokat is a szabályos úton állítjuk vissza (Kezdeti érték fölé nem mehet, 0-nál halál)
+  if (e.type === 'stat') changeStat(e.stat, -rec, 'visszavonás');
+  else if (e.type === 'initial') {
+    const k = e.stat + 'Init';
+    sv.c[k] = Math.max(0, sv.c[k] - rec.real);
+    if (rec.real > 0) sv.c[e.stat] = Math.max(0, Math.min(sv.c[e.stat] - rec.real, sv.c[k])); else sv.c[e.stat] += rec.clamp;
+    flashStat(e.stat);
+  }
+  else if (e.type === 'gold') sv.gold = Math.max(0, sv.gold - rec);
+  else if (e.type === 'food') sv.food = Math.max(0, sv.food - rec);
 }
 const effLabel = e => e.type === 'gold' ? `${signed(e.delta)} arany` : e.type === 'food' ? `${signed(e.delta)} élelem` : e.type === 'initial' ? `Kezdeti ${STAT_NAMES[e.stat]} ${signed(e.delta)}` : `${signed(e.delta)} ${STAT_NAMES[e.stat]}`;
 function die(reason, fromText) {
@@ -225,9 +264,9 @@ function afterTest(type, kind, total) {
     if (kind && e.when === kind) applyEffect(e, i);
     if (type === 'dice' && e.when === 'dice' && e.dice && e.dice.includes(total)) applyEffect(e, i);
   });
-  // a megfelelő választás kijelölése (első koppintás)
-  const idx = a.choices.findIndex(c => (kind && c.kind === kind) || (type === 'dice' && c.kind === 'dice' && c.dice.includes(total)));
-  if (idx >= 0 && sv.status === 'play') sv.sec.sel = idx;
+  // a kimenet szerinti választás csak megjelölődik; a kijelölés (zöld keret) a játékos első koppintása
+  const hits = a.choices.map((c, i) => ((kind && c.kind === kind) || (type === 'dice' && c.kind === 'dice' && c.dice.includes(total))) ? i : -1).filter(i => i >= 0);
+  sv.sec.ready = hits.length === 1 && sv.status === 'play' ? hits[0] : null;
   persist(); render();
   animate(document.querySelector('.mech .result:last-of-type'));
 }
@@ -236,8 +275,8 @@ function afterTest(type, kind, total) {
 function attack() {
   const sv = S.save, cb = sv.sec.combat; if (!cb || cb.over || sv.status !== 'play') return;
   if (cb.enemies.some(e => !e.dead && (e.skill == null || e.stamina == null))) { toast('Add meg az ellenfél hiányzó értékeit (a szövegben olvashatatlan volt).'); return; }
-  if (cb.mode === 'one_by_one' || cb.mode === 'single') cb.target = cb.enemies.findIndex(e => !e.dead);
-  if (cb.enemies[cb.target] && cb.enemies[cb.target].dead) cb.target = cb.enemies.findIndex(e => !e.dead);
+  if (cb.lethal) return;
+  if (cb.mode !== 'simultaneous' || cb.target < 0 || !cb.enemies[cb.target] || cb.enemies[cb.target].dead) cb.target = cb.enemies.findIndex(e => !e.dead);
   const res = combatRound(sv.c, cb.enemies, cb.target, { mode: cb.mode, skill: cb.mods.skill });
   cb.rounds.push(1); const k = cb.rounds.length;
   const parts = [];
@@ -248,13 +287,19 @@ function attack() {
     else if (v.out === 'parry') parts.push(`${e.name} (${v.eAS}) támadását hárítod`);
     else parts.push(`${e.name} (${v.eAS}): kivédtétek egymás csapását`);
   }
-  cb.last = { res, k, luck: null };
+  cb.last = { res, k, luck: null, used: { attack: false, defend: 0 } };
   log('combat', `${k}. harci kör – Támadóerőd ${res.pAS} (${res.pDice.join('+')}+${sv.c.skill}${cb.mods.skill ? signed(cb.mods.skill) : ''}): ${parts.join('; ')}.`);
   for (const v of res.vs) {
     const e = cb.enemies[v.i];
     if (v.out === 'hit' && e.stamina <= 0 && !e.dead) { e.dead = true; log('win', `Legyőzted: ${e.name}.`); }
   }
-  if (res.hurt) changeStat('stamina', -cb.mods.dmgToPlayer * res.hurt, 'harci sebesülés');
+  if (res.hurt) {
+    // halálos seb: előbb a szabály szerinti szerencsepróba (enyhébb seb) felajánlása, csak utána a halál
+    const dmg = cb.mods.dmgToPlayer * res.hurt, after = sv.c.stamina - dmg;
+    const offer = after <= 0 && sv.c.luck > 0;
+    changeStat('stamina', -dmg, 'harci sebesülés', { deferDeath: offer });
+    if (offer && sv.c.stamina <= 0) cb.lethal = { debt: Math.max(0, -after) };
+  }
   checkCombatEnd();
   persist(); render();
   animate(document.querySelector('.roundres'));
@@ -266,24 +311,41 @@ function checkCombatEnd() {
     log('win', `Megnyerted a harcot (${cb.rounds.length} kör).`);
     const a = A(sv.n);
     const idx = a.choices.findIndex(c => c.kind === 'combat_win');
-    if (idx >= 0 && sv.status === 'play') sv.sec.sel = idx;
+    if (idx >= 0 && sv.status === 'play') sv.sec.ready = idx;
   }
-  if (cb.target < 0 || (cb.enemies[cb.target] && cb.enemies[cb.target].dead)) cb.target = cb.enemies.findIndex(e => !e.dead);
+  if (cb.target < 0 || !cb.enemies[cb.target] || cb.enemies[cb.target].dead) cb.target = cb.enemies.findIndex(e => !e.dead);
 }
 function combatLuck(mode) {
-  const sv = S.save, cb = sv.sec.combat; if (!cb || !cb.last || cb.last.luck) return;
+  const sv = S.save, cb = sv.sec.combat; if (!cb || !cb.last) return;
+  const used = cb.last.used = cb.last.used || { attack: false, defend: 0 };
+  const res = cb.last.res, e = cb.enemies[res.target];
+  if (mode === 'attack' && (used.attack || !res.hitEnemy || !e || e.dead)) return;
+  if (mode !== 'attack' && used.defend >= res.hurt) return;
   const r = testLuck(sv.c);
   cb.last.luck = { ...r, mode };
-  const e = cb.enemies[cb.last.res.target];
-  if (mode === 'attack' && e) {
-    if (r.ok) { e.stamina = Math.max(0, e.stamina - 2); log('luck', `Szerencse a harcban (${r.dice.join('+')}=${r.total}): szerencsés – súlyos seb, ${e.name} −2 → ${e.stamina}.`); if (e.stamina <= 0 && !e.dead) { e.dead = true; log('win', `Legyőzted: ${e.name}.`); } }
-    else { e.stamina += 1; log('luck', `Szerencse a harcban (${r.dice.join('+')}=${r.total}): balszerencse – csak karcolás, ${e.name} +1 → ${e.stamina}.`); }
+  const tag = `Szerencse a harcban (${r.dice.join('+')}=${r.total})`;
+  if (mode === 'attack') {
+    used.attack = true;
+    if (r.ok) { e.stamina = Math.max(0, e.stamina - 2); log('luck', `${tag}: szerencsés – súlyos seb, ${e.name} −2 → ${e.stamina}.`); if (e.stamina <= 0 && !e.dead) { e.dead = true; log('win', `Legyőzted: ${e.name}.`); } }
+    else { e.stamina += 1; log('luck', `${tag}: balszerencse – csak karcolás, ${e.name} +1 → ${e.stamina}.`); }
   } else {
-    if (r.ok) { log('luck', `Szerencse a harcban (${r.dice.join('+')}=${r.total}): szerencsés – enyhébb seb.`); changeStat('stamina', 1, 'szerencsés kivédés'); }
-    else { log('luck', `Szerencse a harcban (${r.dice.join('+')}=${r.total}): balszerencse – súlyosabb seb.`); changeStat('stamina', -1, 'balszerencse a harcban'); }
+    used.defend++;
+    if (r.ok) {
+      log('luck', `${tag}: szerencsés – enyhébb seb (+1 ÉLETERŐ).`);
+      if (cb.lethal && cb.lethal.debt > 0) cb.lethal.debt--; else changeStat('stamina', 1, 'szerencsés kivédés', { overInit: false });
+      if (cb.lethal && sv.c.stamina > 0) { cb.lethal = null; log('combat', 'Túlélted a halálosnak tűnő sebet.'); }
+    } else {
+      log('luck', `${tag}: balszerencse – súlyosabb seb (−1 ÉLETERŐ).`);
+      if (cb.lethal) { cb.lethal = null; die('Elestél a harcban.'); } else changeStat('stamina', -1, 'balszerencse a harcban');
+    }
+    if (cb.lethal && used.defend >= res.hurt) { cb.lethal = null; die('Elestél a harcban.'); }
   }
   flashStat('luck');
   checkCombatEnd(); persist(); render();
+}
+function acceptLethal() {
+  const cb = S.save.sec.combat; if (!cb || !cb.lethal) return;
+  cb.lethal = null; die('Elestél a harcban.'); persist(); render();
 }
 function fleeDialog(i) {
   modal('Menekülés', 'Ha elmenekülsz, ellenfeled még egyszer lesújt: vesztesz 2 ÉLETERŐ pontot. Szerencsepróbával csökkentheted (szerencsével −1, balszerencsével −3).', [
@@ -317,11 +379,22 @@ function drinkPotion() {
   if (p.id === 'luck') { sv.c.luckInit += 1; sv.c.luck = sv.c.luckInit; log('potion', `${p.name}: Kezdeti SZERENCSE +1, SZERENCSE → ${sv.c.luck}.`); flashStat('luck'); }
   persist(); render(); rerenderSheet();
 }
-function addItem(name, kind = 'item', use = null) {
-  name = (name || '').trim(); if (!name) return;
-  S.save.items.push({ id: uid(), name, kind, use, from: S.save.n });
+function addItem(name, kind = 'item', use = null, quiet = false) {
+  name = (name || '').trim(); if (!name) return null;
+  const id = uid();
+  S.save.items.push({ id, name, kind, use, from: S.save.n });
   log('item', `${kind === 'ability' ? 'Új képesség' : 'Új tárgy'}: ${name}` + (use ? ` (használat: → ${use})` : '') + '.');
-  persist(); render(); rerenderSheet();
+  if (!quiet) { persist(); render(); rerenderSheet(); }
+  return id;
+}
+function renameItem(id) {
+  const it = S.save.items.find(x => x.id === id); if (!it) return;
+  const inp = h('input', { class: 'field', id: 'rename-item', value: it.name });
+  modal('Tárgy átnevezése', inp, [['Mégse', null], ['Mentés', 'ok']], () => inp.focus()).then(v => {
+    if (!v || !inp.value.trim() || inp.value.trim() === it.name) return;
+    log('item', `Átnevezve: ${it.name} → ${inp.value.trim()}.`);
+    it.name = inp.value.trim(); persist(); render(); rerenderSheet();
+  });
 }
 function removeItem(id) {
   const sv = S.save, it = sv.items.find(x => x.id === id); if (!it) return;
@@ -340,7 +413,16 @@ function jump(n, how = 'jump') {
   if (!n || !S.book.sections[n]) return toast(`Nincs ${n || '?'}. fejezetpont ebben a könyvben (1–${S.book.max}).`);
   closeSheet(); closeDrawer();
   if (S.save.status !== 'play') return toast('A kör véget ért – kezdj újat a menüben.');
-  enterSection(n, how);
+  // a kézi lapozás visszavonható, ha kiderül, hogy rossz számot írtál be (halál, győzelem, hatások is)
+  const snap = JSON.stringify({ ...S.save, undo: null });
+  if (enterSection(n, how)) { S.save.undo = { snap, at: n, from: JSON.parse(snap).n }; persist(); render(); }
+}
+function undoJump() {
+  const u = S.save && S.save.undo; if (!u) return;
+  try { S.save = JSON.parse(u.snap); } catch { return; }
+  S.save.undo = null;
+  log('manual', `Visszaléptél: a(z) ${u.at}. pont nem illett a történetbe, vissza a(z) ${u.from}. pontra.`);
+  persist(); render(); scrollTop();
 }
 
 // ---------- megjelenítés ----------
@@ -359,7 +441,7 @@ function renderBar() {
   if (S.view === 'play' && sv && sv.c) {
     bar.append(h('div', { class: 'runhead', 'aria-live': 'polite' }, `§ ${sv.n}`, h('small', null, `${sv.round}. kör`)));
     const st = (k, lbl, low) => h('span', { class: 'stat' + (low ? ' low' : ''), 'data-stat': k }, h('b', null, sv.c[k]), h('i', null, lbl));
-    bar.append(h('button', { class: 'stats', 'aria-label': 'Kalandlap', onclick: () => openSheet('kalandlap') },
+    bar.append(h('button', { class: 'stats', 'aria-label': `Kalandlap: ÜGYESSÉG ${sv.c.skill}, ÉLETERŐ ${sv.c.stamina}, SZERENCSE ${sv.c.luck}`, onclick: () => openSheet('kalandlap') },
       st('skill', 'ügy'), st('stamina', 'élet', sv.c.stamina <= 4), st('luck', 'szer')));
   } else {
     bar.append(h('div', { class: 'runhead' }, S.view === 'setup' ? 'Kalandlap' : 'Könyvtár'));
@@ -392,12 +474,15 @@ function renderSection(page, dock) {
   for (const p of a.paras) {
     if (p.kind === 'stat') { prose.append(h('div', { class: 'foe' }, h('em', null, p.name), h('span', { html: `<span class="sc">ÜGYESSÉG</span> ${esc(p.skill)}` }), h('span', { html: `<span class="sc">ÉLETERŐ</span> ${esc(p.stamina)}` }))); prevStat = true; continue; }
     if (p.kind === 'thead') { prose.append(h('div', { class: 'foe-head' }, h('span'), h('span', { class: 'sc' }, 'ÜGYESSÉG'), h('span', { class: 'sc' }, 'ÉLETERŐ'))); continue; }
-    if (p.kind === 'trow') { prose.append(h('div', { class: 'foe row' }, h('em', null, p.name), h('span', null, p.skill), h('span', null, p.stamina))); prevStat = true; continue; }
+    if (p.kind === 'trow') { prose.append(h('div', { class: 'foe frow' }, h('em', null, p.name), h('span', null, p.skill), h('span', null, p.stamina))); prevStat = true; continue; }
     prose.append(h('p', { class: prevStat ? 'cont' : null, html: paraHtml(p, states, sec.sel) }));
     prevStat = false;
   }
   prose.addEventListener('click', ev => { const o = ev.target.closest('.opt'); if (o) onKey(+o.dataset.c); });
   wrap.append(prose);
+  // a könyv illusztrációi ehhez a ponthoz
+  const figs = S.settings.showFigs !== false && S.book.figs && S.book.figs[sv.n];
+  if (figs && figs.length) for (const f of figs) wrap.append(figEl(f, sv.n));
   const mech = renderMech(a, sv);
   if (mech.childElementCount) wrap.append(mech);
   if (sv.status === 'dead') wrap.append(h('div', { class: 'ending' }, h('b', null, 'Meghaltál. '), 'Ez a kör véget ért. Az eseménynaplóban visszanézheted, mi történt.'));
@@ -426,8 +511,8 @@ function renderMech(a, sv) {
         h('span', { class: 'nm' }, e.name),
         missing ? h('span', { class: 'nums' }, h('button', { class: 'mini', onclick: ev => { ev.stopPropagation(); editFoe(i); } }, 'Értékek megadása'))
           : h('span', { class: 'nums' }, `ÜGY ${e.skill} · ÉLET ${e.stamina}`, ' ', h('span', { class: 'adj' },
-            h('button', { 'aria-label': 'ÉLETERŐ −1', onclick: ev => { ev.stopPropagation(); e.stamina = Math.max(0, e.stamina - 1); if (e.stamina <= 0 && !e.dead) { e.dead = true; log('win', `Legyőzted: ${e.name} (kézi).`); } checkCombatEnd(); persist(); render(); } }, '−'),
-            h('button', { 'aria-label': 'ÉLETERŐ +1', onclick: ev => { ev.stopPropagation(); e.stamina += 1; if (e.dead && e.stamina > 0) { e.dead = false; cb.over = false; cb.won = false; } persist(); render(); } }, '+'))),
+            h('button', { 'aria-label': `${e.name} ÉLETERŐ −1`, onclick: ev => { ev.stopPropagation(); e.stamina = Math.max(0, e.stamina - 1); log('manual', `Kézi módosítás: ${e.name} ÉLETERŐ −1 → ${e.stamina}.`); if (e.stamina <= 0 && !e.dead) { e.dead = true; log('win', `Legyőzted: ${e.name} (kézi).`); } checkCombatEnd(); persist(); render(); } }, '−'),
+            h('button', { 'aria-label': `${e.name} ÉLETERŐ +1`, onclick: ev => { ev.stopPropagation(); e.stamina += 1; log('manual', `Kézi módosítás: ${e.name} ÉLETERŐ +1 → ${e.stamina}.`); if (e.dead && e.stamina > 0) { e.dead = false; cb.over = false; cb.won = false; if (cb.target < 0) cb.target = i; } persist(); render(); } }, '+'))),
         h('div', { class: 'bar' }, h('i', { style: `width:${pct}%` }))));
     });
     panel.append(foes);
@@ -439,9 +524,9 @@ function renderMech(a, sv) {
       panel.append(rr);
     }
     panel.append(h('div', { class: 'mods', style: 'margin-top:8px' },
-      h('label', null, 'Ügyesség-módosító', h('input', { type: 'number', id: 'mod-skill', value: cb.mods.skill, onchange: ev => { cb.mods.skill = parseInt(ev.target.value, 10) || 0; persist(); } })),
-      h('label', null, 'Sebzésed', h('input', { type: 'number', id: 'mod-dmge', min: 0, value: cb.mods.dmgToEnemy, onchange: ev => { cb.mods.dmgToEnemy = Math.max(0, parseInt(ev.target.value, 10) || 0); persist(); } })),
-      h('label', null, 'Sérülésed', h('input', { type: 'number', id: 'mod-dmgp', min: 0, value: cb.mods.dmgToPlayer, onchange: ev => { cb.mods.dmgToPlayer = Math.max(0, parseInt(ev.target.value, 10) || 0); persist(); } }))));
+      h('label', null, 'Ügyesség-módosító', h('input', { type: 'number', inputmode: 'numeric', id: 'mod-skill', value: cb.mods.skill, onchange: ev => { cb.mods.skill = parseInt(ev.target.value, 10) || 0; log('manual', `Harci ÜGYESSÉG-módosító: ${cb.mods.skill}.`); persist(); } })),
+      h('label', null, 'Sebzésed', h('input', { type: 'number', inputmode: 'numeric', id: 'mod-dmge', min: 0, value: cb.mods.dmgToEnemy, onchange: ev => { cb.mods.dmgToEnemy = Math.max(0, parseInt(ev.target.value, 10) || 0); log('manual', `Sebzésed találatonként: ${cb.mods.dmgToEnemy}.`); persist(); } })),
+      h('label', null, 'Sérülésed', h('input', { type: 'number', inputmode: 'numeric', id: 'mod-dmgp', min: 0, value: cb.mods.dmgToPlayer, onchange: ev => { cb.mods.dmgToPlayer = Math.max(0, parseInt(ev.target.value, 10) || 0); log('manual', `Sérülésed találatonként: ${cb.mods.dmgToPlayer}.`); persist(); } }))));
     mech.append(panel);
   }
   // hatások
@@ -462,7 +547,16 @@ function renderMech(a, sv) {
   // javaslatok: tárgy, képesség, jegyzet, használat
   const sugs = [];
   a.suggestions.forEach((s, i) => {
-    if (sec.sugs[i]) return;
+    const got = sec.sugs[i];
+    if (typeof got === 'string') {
+      // automatikusan felírt tárgy: átnevezhető vagy visszavonható
+      const it = sv.items.find(x => x.id === got);
+      if (it) sugs.push(h('span', { class: 'chip on' }, `✓ ${it.name}`,
+        h('button', { class: 'x', onclick: () => renameItem(it.id) }, 'átnevez'),
+        h('button', { class: 'x', onclick: () => { removeItem(it.id); sec.sugs[i] = true; persist(); render(); } }, 'visszavon')));
+      return;
+    }
+    if (got) return;
     const done = () => { sec.sugs[i] = true; persist(); render(); };
     if (s.type === 'remove') sugs.push(h('button', { class: 'chip', onclick: () => openSheet('targyak', { removeHint: s.text }) }, '− Tárgy törlése…'));
     else if (s.type === 'use') sugs.push(h('button', { class: 'chip', onclick: () => { addItem(s.name || 'Tárgy', 'item', s.target); done(); } }, `+ ${s.name || 'Tárgy'} (használat → ${s.target})`));
@@ -473,6 +567,9 @@ function renderMech(a, sv) {
   return mech;
 }
 
+function undoJumpButton(sv) {
+  return sv.undo && sv.undo.at === sv.n ? h('button', { class: 'act quiet', onclick: undoJump }, `Vissza a(z) ${sv.undo.from}. pontra (rossz szám)`) : null;
+}
 function renderDock(dock, a, sv, states) {
   if (sv.status === 'dead' || sv.status === 'won') {
     const won = sv.status === 'won';
@@ -480,13 +577,24 @@ function renderDock(dock, a, sv, states) {
       h('h3', null, won ? 'Győzelem!' : 'Meghaltál'),
       h('p', null, won ? `A(z) ${sv.round}. kör sikerrel zárult.` : `A(z) ${sv.round}. kör véget ért a(z) ${sv.n}. fejezetpontban.`),
       h('div', { class: 'acts' },
+        undoJumpButton(sv),
         h('button', { class: 'act quiet', onclick: () => openSheet('naplo') }, 'Eseménynapló'),
         h('button', { class: 'act', onclick: () => newRound() }, 'Új kör'))));
+    announce(won ? 'Győzelem!' : 'Meghaltál. A kör véget ért.');
     return;
   }
-  const sec = sv.sec;
+  const sec = sv.sec, cb = sec.combat, t = sec.tests;
+  const hint = h('div', { class: 'hint' });
+  const acts = h('div', { class: 'acts' });
+  if (cb && cb.lethal) {
+    // halálos seb: döntés a szerencsepróbáról
+    hint.append(h('b', null, 'Halálos seb! '), 'Szerencsepróbával enyhítheted: szerencsével 2 helyett csak 1 pontot veszítesz.');
+    acts.append(h('button', { class: 'act', onclick: () => combatLuck('defend') }, 'Szerencsepróba'), h('button', { class: 'act danger', onclick: acceptLethal }, 'Elfogadom'));
+    dock.append(hint, acts);
+    announce(hint.textContent);
+    return;
+  }
   // kijelölt választás magyarázata
-  const hint = h('div', { class: 'hint', 'aria-live': 'polite' });
   if (sec.sel != null && a.choices[sec.sel]) {
     const c = a.choices[sec.sel], st = states[sec.sel];
     if (st.locked) hint.append(h('b', null, `${sec.sel + 1}`), ` · ${st.why} `, h('button', { onclick: () => { sec.manual = true; log('manual', 'Kézi döntés: minden választás feloldva ebben a pontban.'); persist(); render(); } }, 'Kézi döntés'));
@@ -495,38 +603,69 @@ function renderDock(dock, a, sv, states) {
       if (st.hint) hint.append(` (${st.hint.text || (st.hint.has ? 'van: ' + st.hint.item : 'nincs nálad')})`);
       hint.append(' — koppints újra a lapozáshoz');
     }
-  } else if (a.choices.length) hint.append('Válassz: első koppintás kijelöl, második lapoz.');
+  } else if (sec.ready != null && a.choices[sec.ready]) hint.append('Az eredmény szerint: ', h('b', null, `${sec.ready + 1}.`), ' választás. Első koppintás kijelöl, második lapoz.');
+  else if (a.choices.length) hint.append('Válassz: első koppintás kijelöl, második lapoz.');
   else if (a.numberInput) hint.append('A továbblépéshez ki kell számolnod a fejezetpont számát.');
+  else if (a.ending) hint.append('Itt nem találtam továbblépést. Ha a szövegben van szám, lapozz oda; ha a történet itt véget ér, add fel.');
   dock.append(hint);
+  announce(hint.textContent);
   // műveletek
-  const acts = h('div', { class: 'acts' });
-  const t = sec.tests;
   for (const tt of a.tests) {
     if (tt.type === 'luck' && !t.luck) acts.append(h('button', { class: 'act', onclick: doLuck }, 'Szerencsepróba'));
     if (tt.type === 'skill' && !t.skill) acts.append(h('button', { class: 'act', onclick: doSkill }, 'Ügyességpróba'));
     if (tt.type === 'dice' && !t.dice) acts.append(h('button', { class: 'act', onclick: () => doDice(tt.n) }, tt.n > 1 ? 'Dobás (2 kocka)' : 'Dobás (1 kocka)'));
   }
-  const cb = sec.combat;
   if (cb && !cb.over) {
     acts.append(h('button', { class: 'act', onclick: attack }, cb.rounds.length ? 'Következő kör' : 'Harc: támadás'));
-    if (cb.last && !cb.last.luck) {
-      const r = cb.last.res;
-      if (r.hitEnemy) acts.append(h('button', { class: 'act quiet', onclick: () => combatLuck('attack') }, 'Szerencse: súlyosabb seb'));
-      if (r.hurt) acts.append(h('button', { class: 'act quiet', onclick: () => combatLuck('defend') }, 'Szerencse: enyhébb seb'));
+    if (cb.last) {
+      const r = cb.last.res, used = cb.last.used || { attack: !!cb.last.luck, defend: cb.last.luck ? r.hurt : 0 };
+      const tgt = cb.enemies[r.target];
+      if (r.hitEnemy && !used.attack && tgt && !tgt.dead) acts.append(h('button', { class: 'act quiet', onclick: () => combatLuck('attack') }, 'Szerencse: súlyosabb seb'));
+      if (r.hurt && used.defend < r.hurt) acts.append(h('button', { class: 'act quiet', onclick: () => combatLuck('defend') }, 'Szerencse: enyhébb seb'));
     }
   }
-  if (a.numberInput || (!a.choices.length && !a.death && !a.victory)) acts.append(h('button', { class: 'act' + (a.choices.length ? ' quiet' : ''), onclick: () => openJump(null, null, a.numberOffset) }, 'Számra lapozok'));
-  if (!a.choices.length && a.numberInput) acts.append(h('button', { class: 'act danger', onclick: () => modal('Feladod?', 'Ha nem tudod a választ, a kalandod itt véget ér.', [['Mégse', null], ['Feladom', 'y']]).then(v => { if (v) { die('Nem találtad meg a megoldást.'); render(); } }) }, 'Feladom'));
+  const stuck = !a.choices.length && (a.numberInput || a.ending);
+  if (a.numberInput || stuck) acts.append(h('button', { class: 'act' + (a.choices.length ? ' quiet' : ''), onclick: () => openJump(null, null, a.numberOffset) }, 'Számra lapozok'));
+  if (stuck) acts.append(h('button', { class: 'act danger', onclick: () => modal('Feladod?', a.numberInput ? 'Ha nem tudod a választ, a kalandod itt véget ér.' : 'A kör itt véget ér.', [['Mégse', null], ['Feladom', 'y']]).then(v => { if (v) { die(a.numberInput ? 'Nem találtad meg a megoldást.' : 'A történet itt véget ért.'); render(); } }) }, 'Feladom'));
+  const uj = undoJumpButton(sv); if (uj) acts.append(uj);
   if (acts.childElementCount) dock.append(acts);
   // választógombok
   const keys = h('div', { class: 'keys', role: 'group', 'aria-label': 'Választások' });
   a.choices.forEach((c, i) => {
     const st = states[i];
-    keys.append(h('button', { class: 'key' + (sec.sel === i ? ' sel' : '') + (st.locked ? ' locked' : '') + (c.kind === 'conditional' ? ' cond' : '') + (st.seen ? ' seen' : ''), 'aria-label': `${i + 1}. választás: ${c.label || 'tovább'}`, 'aria-pressed': sec.sel === i ? 'true' : 'false', onclick: () => onKey(i) },
-      c.kind === 'back' ? '↩' : String(i + 1), st.locked ? h('small', null, 'zárva') : null));
+    const state = [st.locked ? 'zárva' : null, c.kind === 'conditional' ? 'feltételes' : null, st.seen ? 'már jártál ott' : null, sec.ready === i ? 'a próba eredménye' : null].filter(Boolean).join(', ');
+    keys.append(h('button', { class: 'key' + (sec.sel === i ? ' sel' : '') + (st.locked ? ' locked' : '') + (c.kind === 'conditional' ? ' cond' : '') + (st.seen ? ' seen' : '') + (sec.ready === i && sec.sel !== i ? ' ready' : ''), 'aria-label': `${i + 1}. választás: ${c.label || 'tovább'}${state ? ` (${state})` : ''}`, 'aria-pressed': sec.sel === i ? 'true' : 'false', onclick: () => onKey(i) },
+      String(i + 1), st.locked ? h('small', null, 'zárva') : c.kind === 'back' ? h('small', null, '↩ vissza') : null));
   });
   if (a.choices.length) dock.append(keys);
 }
+// képernyőolvasónak: egy állandó élő régió (nem rajzolódik újra minden alkalommal)
+let lastAnnounce = '';
+function announce(text) {
+  if (!text || text === lastAnnounce) return;
+  lastAnnounce = text;
+  let el = document.getElementById('live');
+  if (!el) { el = h('div', { id: 'live', class: 'sr-only', 'aria-live': 'polite', role: 'status' }); document.body.append(el); }
+  el.textContent = text;
+}
+// ---------- illusztrációk ----------
+function figEl(f, n) {
+  return h('figure', { class: 'fig' }, h('button', { class: 'figbtn', 'aria-label': `Illusztráció a(z) ${n}. ponthoz – nagyítás`, onclick: () => viewImage(f.img, `${n}. fejezetpont`) },
+    h('img', { src: f.img, alt: `Illusztráció a(z) ${n}. fejezetponthoz`, width: f.w || null, height: f.h || null, loading: 'lazy', decoding: 'async' })));
+}
+function viewImage(src, caption) {
+  let zoom = false;
+  const img = h('img', { src, alt: caption });
+  const close = () => { v.remove(); document.removeEventListener('keydown', onEsc); };
+  const onEsc = ev => { if (ev.key === 'Escape') close(); };
+  const v = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': caption },
+    h('div', { class: 'vbar' }, h('span', null, caption), h('button', { class: 'sh-close', 'aria-label': 'Bezárás', onclick: close }, '×')),
+    h('div', { class: 'vbody', ondblclick: () => { zoom = !zoom; v.classList.toggle('zoom', zoom); } }, img));
+  document.addEventListener('keydown', onEsc);
+  document.body.append(v);
+}
+function figureCount() { const f = S.book && S.book.figs; return f ? Object.values(f).reduce((a, x) => a + x.length, 0) : 0; }
+
 function pulseActs() { const b = document.querySelector('#dock .act'); if (b) { b.classList.remove('pulse'); void b.offsetWidth; b.classList.add('pulse'); } }
 function editFoe(i) {
   const e = S.save.sec.combat.enemies[i];
@@ -566,9 +705,10 @@ function renderLibrary(page, dock) {
   for (const b of all) {
     const sv = store.loadSave(b.id);
     const status = !sv ? 'Még nem játszottad' : sv.status === 'setup' ? `${sv.round}. kör – karakteralkotás` : sv.status === 'play' ? `${sv.round}. kör – a ${sv.n}. pontnál tartasz` : sv.status === 'dead' ? `${sv.round}. kör – meghaltál` : `${sv.round}. kör – győzelem`;
-    books.append(h('div', { class: 'book' },
+    books.append(h('div', { class: 'book' + (b.cover ? ' has-cover' : '') },
+      b.cover ? h('img', { class: 'cover', src: b.cover, alt: '', width: 48, height: 77 }) : null,
       h('div', { class: 't' }, b.title),
-      h('div', { class: 's' }, `${b.max} fejezetpont · ${status}`),
+      h('div', { class: 's' }, `${b.max} fejezetpont${b.figs ? ` · ${b.figs} kép` : ''} · ${status}`),
       h('button', { class: 'btn pri go', onclick: () => openBook(b.id) }, sv && sv.status === 'play' ? 'Folytatás' : 'Megnyitás'),
       b.demo ? null : h('div', { class: 'more' },
         h('button', { class: 'btn', onclick: () => exportBook(b.id) }, 'Mentés fájlba (.kjk.json)'),
@@ -597,10 +737,11 @@ async function doImport(file) {
       if (bar) bar.style.width = S.importing.pct + '%';
       if (m) m.textContent = S.importing.msg + (S.importing.eta ? ` · kb. ${Math.ceil(S.importing.eta / 60)} perc van hátra` : '');
     }, ctrl.signal);
-    await store.putBook(book);
+    const saved = await store.putBook(book);
     S.importing = null;
     const warn = (book.warnings || []).filter(w => /hiányzó/.test(w));
-    toast(`Betöltve: ${book.title} (${Object.keys(book.sections).length} fejezetpont)` + (warn.length ? ' – figyelmeztetés: ' + warn[0] : ''));
+    if (!saved) modal('Nem sikerült tartósan menteni', 'A könyv most játszható, de a böngésző nem engedte elmenteni (kevés a tárhely, vagy privát ablak). Újratöltés után elveszne – mentsd fájlba a Könyvtárban („Mentés fájlba”), vagy szabadíts fel helyet.', [['Rendben', 'ok']]);
+    else toast(`Betöltve: ${book.title} (${Object.keys(book.sections).length} fejezetpont${book.figs ? `, ${Object.values(book.figs).reduce((x, y) => x + y.length, 0)} kép` : ''})` + (warn.length ? ' – figyelmeztetés: ' + warn[0] : ''));
     S.books = await store.listBooks();
     openBook(book.id);
   } catch (e) {
@@ -613,10 +754,12 @@ async function doImport(file) {
 async function exportBook(id) {
   const b = await store.getBook(id); if (!b) return;
   const data = bookToJson(b), filename = `${b.title.replace(/[\\/:*?"<>|]+/g, '').slice(0, 60)}.kjk.json`;
+  const inArtifact = !!(window.claude && window.claude.use);
   try {
-    const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
-    if (dl) { await dl.save({ filename, data }); return; }
-  } catch (e) { if (e && /declin|cancel|denied/i.test(e.code || e.message || '')) return; }
+    const dl = inArtifact ? await window.claude.use('downloads') : null;
+    if (dl) { await dl.save({ filename, data }); toast('Mentés elindítva.'); return; }
+  } catch (e) { if (e && /declin|cancel|denied/i.test(e.code || e.message || '')) return toast('A mentést elutasítottad.'); }
+  if (inArtifact) return toast('Ebben a nézetben a fájlmentés nem érhető el – használd a telepített webappot.');
   try {
     const a = h('a', { href: URL.createObjectURL(new Blob([data], { type: 'application/json' })), download: filename });
     document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
@@ -663,19 +806,21 @@ function openDrawer() {
   } else if (inGame) d.append(mi('☰', 'Eseménynapló', () => openSheet('naplo'), sv ? sv.log.length : 0));
   if (S.book && S.view !== 'library') {
     d.append(mi('¶', 'Bevezető és szabályok', () => openSheet('bevezeto')));
+    if (figureCount()) d.append(mi('▣', 'Képek', () => openSheet('kepek'), figureCount()));
     if (S.book.appendix && S.book.appendix.length) d.append(mi('▦', 'Mellékletek', () => openSheet('melleklet')));
     d.append(h('div', { class: 'msep' }));
     d.append(mi('↻', 'Új kör', () => modal('Új kör', sv && sv.status === 'play' ? 'Feladod a jelenlegi kört, és új karakterrel kezdesz? Az eseménynapló megmarad.' : 'Új karakterrel kezdesz? Az eseménynapló megmarad.', [['Mégse', null], ['Új kör', 'y']]).then(v => { if (v) newRound(); }), null, 'red'));
   }
   d.append(mi('▤', 'Könyvtár', showLibrary));
   d.append(mi('⚙', 'Beállítások', () => openSheet('beallitas')));
-  d.classList.add('open');
+  d.classList.add('open'); d.inert = false; d.removeAttribute('aria-hidden');
+  setTimeout(() => { const f = d.querySelector('.mi'); if (f) f.focus(); }, 60);
   let scrim = $('.scrim'); if (!scrim) { scrim = h('div', { class: 'scrim', onclick: () => { closeDrawer(); closeSheet(); } }); document.body.append(scrim); }
 }
-function closeDrawer() { $('#drawer').classList.remove('open'); if (!S.sheet) { const s = $('.scrim'); if (s) s.remove(); } }
+function closeDrawer() { const d = $('#drawer'); d.classList.remove('open'); d.inert = true; d.setAttribute('aria-hidden', 'true'); if (!S.sheet) { const s = $('.scrim'); if (s) s.remove(); } }
 
 function openSheet(kind, opts = {}) {
-  $('#drawer').classList.remove('open');
+  { const d = $('#drawer'); d.classList.remove('open'); d.inert = true; d.setAttribute('aria-hidden', 'true'); }
   S.sheet = { kind, opts };
   rerenderSheet();
   if (!$('.scrim')) document.body.append(h('div', { class: 'scrim', onclick: () => { closeDrawer(); closeSheet(); } }));
@@ -711,7 +856,26 @@ const SHEETS = {
     const items = sv.items.filter(i => i.kind !== 'ability'), abil = sv.items.filter(i => i.kind === 'ability');
     const itemRow = it => h('div', { class: 'li' }, h('span', { class: 'nm' }, it.name, it.from ? h('span', { class: 'meta' }, ` · ${it.from}. pont`) : null),
       it.use ? h('button', { class: 'btn pri', disabled: sv.status !== 'play', onclick: () => { log('item', `Használat: ${it.name} → ${it.use}.`); jump(it.use, 'use'); } }, `Használat → ${it.use}`) : null,
+      h('button', { class: 'btn', 'aria-label': `${it.name} átnevezése`, onclick: () => renameItem(it.id) }, 'Átnevez'),
       h('button', { class: 'btn red', onclick: () => removeItem(it.id) }, 'Törlés'));
+    // minden megszerzett dolog egy helyen: pénz, élelem, ital is
+    b.append(h('div', { class: 'list' },
+      h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, `${sv.gold} Aranytallér`))),
+      h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, `${sv.food} adag élelem`), h('span', { class: 'meta' }, ` · +${sv.mealValue} ÉLETERŐ`)), h('button', { class: 'btn', disabled: sv.food <= 0 || sv.status !== 'play', onclick: eat }, 'Étkezés')),
+      sv.potion ? h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, sv.potion.name), sv.potion.used ? h('span', { class: 'meta' }, ' · elfogyott') : null)) : null));
+    const pend = (sv.pending || []);
+    if (pend.length) {
+      b.append(h('h5', null, `Felírandó? (${pend.length})`));
+      b.append(h('div', { class: 'list' }, pend.map(p => h('div', { class: 'li' }, h('span', { class: 'nm' }, p.name || (p.type === 'note' ? 'Jegyzet' : 'Tárgy'), h('span', { class: 'meta' }, ` · ${p.n}. pont: „${p.text.slice(0, 90)}${p.text.length > 90 ? '…' : ''}”`)),
+        h('button', { class: 'btn pri', onclick: () => {
+          sv.pending = sv.pending.filter(x => x.id !== p.id);
+          if (p.type === 'note') addNote(p.text, p.offset);
+          else if (p.type === 'use') addItem(p.name || 'Tárgy', 'item', p.target);
+          else editItemDialog(p.name, p.type === 'ability' ? 'ability' : 'item');
+          persist(); rerenderSheet();
+        } }, 'Felírom'),
+        h('button', { class: 'btn', onclick: () => { sv.pending = sv.pending.filter(x => x.id !== p.id); persist(); rerenderSheet(); } }, 'Elvetem')))));
+    }
     b.append(h('h5', null, `Tárgyak (${items.length})`));
     b.append(items.length ? h('div', { class: 'list' }, items.map(itemRow)) : h('p', { class: 'muted' }, 'Még nincs tárgyad.'));
     if (abil.length) { b.append(h('h5', null, 'Képességek')); b.append(h('div', { class: 'list' }, abil.map(itemRow))); }
@@ -748,6 +912,16 @@ const SHEETS = {
     b.append(pr);
     return 'Bevezető és szabályok';
   },
+  kepek(b) {
+    const sv = S.save, figs = S.book.figs || {};
+    const seen = new Set(sv && sv.seen ? sv.seen : []);
+    const nums = Object.keys(figs).map(Number).sort((a, c) => a - c);
+    const open = nums.filter(n => seen.has(n)), hidden = nums.filter(n => !seen.has(n)).reduce((a, n) => a + figs[n].length, 0);
+    if (open.length) b.append(h('div', { class: 'gallery' }, open.flatMap(n => figs[n].map(f => h('button', { class: 'gitem', onclick: () => viewImage(f.img, `${n}. fejezetpont`) }, h('img', { src: f.img, alt: `${n}. fejezetpont`, loading: 'lazy' }), h('span', null, `§${n}`))))));
+    else b.append(h('p', { class: 'muted' }, 'Még egyetlen képes fejezetpontot sem jártál be.'));
+    if (hidden) b.append(h('p', { class: 'muted' }, `Még ${hidden} kép vár felfedezésre – a fejezetpontok bejárásával jelennek meg itt.`));
+    return 'Képek';
+  },
   melleklet(b) {
     for (const a of S.book.appendix || []) b.append(h('img', { class: 'appimg', src: a.img, alt: `Melléklet – ${a.page}. oldal` }));
     b.append(h('p', { class: 'muted' }, 'A titkos fejezetpontokhoz: a „Lapozás számra” lapon a betű–szám átváltás is megtalálható (A=1 … Z=26).'));
@@ -781,6 +955,8 @@ const SHEETS = {
     b.append(h('label', { class: 'li' }, h('span', { class: 'nm' }, 'Betűméret'), size));
     const auto = h('input', { type: 'checkbox', id: 'set-auto', checked: st.autoEffects, onchange: ev => { st.autoEffects = ev.target.checked; store.writeSettings(st); } });
     b.append(h('label', { class: 'li' }, h('span', { class: 'nm' }, 'Pontváltozások automatikus alkalmazása', h('br'), h('span', { class: 'muted' }, 'A feltétel nélküli „Vesztesz 2 ÉLETERŐ pontot” jellegű utasításokat a játék magától végrehajtja (visszavonható).')), auto));
+    const figs = h('input', { type: 'checkbox', id: 'set-figs', checked: st.showFigs !== false, onchange: ev => { st.showFigs = ev.target.checked; store.writeSettings(st); render(); } });
+    b.append(h('label', { class: 'li' }, h('span', { class: 'nm' }, 'Illusztrációk megjelenítése', h('br'), h('span', { class: 'muted' }, 'A könyv képei a fejezetpont szövege után. (A PDF-ből beolvasott könyveknél.)')), figs));
     b.append(h('p', { class: 'muted' }, 'A könyvek és a mentett állások ezen az eszközön, ebben a böngészőben tárolódnak.'));
     return 'Beállítások';
   },
@@ -820,8 +996,9 @@ async function boot() {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
   window.addEventListener('pagehide', flush);
   // önálló webapp: offline működés és tartós tárhely (a claude.ai-os nézetben nincs .pwa osztály)
+  { const d = $('#drawer'); d.inert = true; d.setAttribute('aria-hidden', 'true'); }
   if (isPwaShell()) {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+    if ('serviceWorker' in navigator && location.hostname !== 'localhost') navigator.serviceWorker.register('sw.js').catch(() => {});
     try { if (navigator.storage && navigator.storage.persist && standalone()) navigator.storage.persist(); } catch {}
   }
   S.books = await store.listBooks();
