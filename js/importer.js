@@ -72,7 +72,8 @@ export async function importPdf(buf, name, onProgress = () => {}, signal) {
 const scaleOf = p => 1100 / p.getViewport({ scale: 1 }).width;
 
 async function importDoc(doc, name, onProgress, signal) {
-  let title = name;
+  // „KJK_07_A_Vertengerek” → „A Vertengerek” (a sorozatjel és a sorszám nélkül)
+  let title = name.replace(/^KJK\s*\d+\s*[-–.]?\s*/i, '') || name;
   try { const md = await doc.getMetadata(); const t = md && md.info && md.info.Title; if (t && t.length > 3 && !/microsoft|untitled|\.doc|\.pdf/i.test(t)) title = t; } catch {}
   const N = doc.numPages;
 
@@ -83,23 +84,41 @@ async function importDoc(doc, name, onProgress, signal) {
   const pages = [];
   const t0 = performance.now();
   if (chars > Math.min(600, probe.length * 150)) {
+    // 1. kör: szöveg és a PDF saját képobjektumai (hol vannak a lapon, mekkorák)
+    const pdfjs = await loadPdfjs();
+    const seen = {};
     for (let n = 1; n <= N; n++) {
       if (signal && signal.aborted) throw aborted();
       const p = await doc.getPage(n);
       const vp = p.getViewport({ scale: 1 }), scale = scaleOf(p);
       const tc = await p.getTextContent();
       const pg = { n, W: Math.round(vp.width * scale), H: Math.round(vp.height * scale), conf: 100, lines: textItemsToLines(tc.items, vp, scale) };
-      // illusztrációk: az oldal képét is meg kell rajzolni
-      try {
-        const rvp = p.getViewport({ scale });
-        const c = document.createElement('canvas'); c.width = pg.W; c.height = pg.H;
-        const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-        await p.render({ canvasContext: ctx, viewport: rvp, intent: 'print' }).promise;
-        pg.figs = findFigures(c, pg);
-        c.width = c.height = 0;
-      } catch {}
+      try { pg.imgs = await pageImages(pdfjs, p, p.getViewport({ scale })); } catch { pg.imgs = []; }
+      for (const im of pg.imgs) seen[im.key] = (seen[im.key] || 0) + 1;
       pages.push(pg);
-      onProgress({ phase: 'text', page: n, total: N, msg: `Szöveg és képek kinyerése: ${n}/${N}. oldal` });
+      onProgress({ phase: 'text', page: n, total: N * 2, msg: `Szöveg kinyerése: ${n}/${N}. oldal` });
+    }
+    // 2. kör: a valódi illusztrációk kivágása (a sokszor ismétlődő díszeket – hajó, vár, inda – kihagyjuk)
+    for (const pg of pages) {
+      if (signal && signal.aborted) throw aborted();
+      const imgs = pg.imgs || []; delete pg.imgs;
+      const cands = imgs.filter(im => seen[im.key] < 4 && im.x1 - im.x0 > pg.W * 0.08 && im.y1 - im.y0 > pg.H * 0.05);
+      if (cands.length) {
+        try {
+          const p = await doc.getPage(pg.n);
+          const c = document.createElement('canvas'); c.width = pg.W; c.height = pg.H;
+          const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+          await p.render({ canvasContext: ctx, viewport: p.getViewport({ scale: scaleOf(p) }), intent: 'print' }).promise;
+          const textLines = pg.lines.filter(l => l.t.trim().length > 2).length;
+          const scan = cands.some(im => (im.x1 - im.x0) * (im.y1 - im.y0) > pg.W * pg.H * 0.8);
+          if (scan && textLines > 3) pg.figs = findFigures(c, pg); // szkennelt oldal szövegréteggel: a tintás, szöveg nélküli sávok a képek
+          else pg.figs = cands.map(im => cropFigure(c, im.x0, im.y0, im.x1, im.y1)).filter(Boolean);
+          // egész oldalas illusztráció (szöveg nélküli oldal): a nyomtatott könyvben a szemközti oldalhoz tartozik
+          if (!textLines) for (const f of pg.figs) f.full = true;
+          c.width = c.height = 0;
+        } catch {}
+      }
+      onProgress({ phase: 'figs', page: N + pg.n, total: N * 2, msg: `Képek kinyerése: ${pg.n}/${N}. oldal` });
     }
   } else {
     await ocrPages(doc, N, pages, onProgress, signal, t0);
@@ -109,8 +128,8 @@ async function importDoc(doc, name, onProgress, signal) {
   if (location.hostname === 'localhost') { try { window.__kjkPages = pages; } catch {} } // fejlesztéshez: nyers oldalak újraelemzése OCR nélkül
   const built = buildBook(pages);
   if (!built.max || !built.sections[1]) throw new Error('Nem találtam számozott fejezetpontokat ebben a PDF-ben. Biztosan KJK-lapozgatós könyv?');
-  // mellékletek (pl. betű–szám táblázat) képként
-  const appendix = [];
+  // mellékletek: a bevezető képei (térkép, Kalandlap; a borító nélkül) és a hátsó táblázatok (pl. betű–szám)
+  const appendix = built.frontFigs.filter(f => f.page > 1).map(f => ({ page: f.page, img: f.img }));
   for (const n of built.appendixPages.slice(0, 6)) {
     try {
       const p = await doc.getPage(n);
@@ -210,6 +229,8 @@ async function ocrPages(doc, N, pages, onProgress, signal, t0) {
       }
       pages[n - 1] = { n, W: c.width, H: c.height, conf: Math.round(data.confidence), lines };
       pages[n - 1].figs = findFigures(c, pages[n - 1]);
+      // szöveg nélküli oldal képe egész oldalas illusztráció: a szemközti oldal pontjához tartozik
+      if (lines.filter(l => l.c >= 85 && (l.t.match(/\p{L}{3,}/gu) || []).length >= 2).length < 2) for (const f of pages[n - 1].figs) f.full = true;
       c.width = c.height = 0; // telefonon számít a memória
       done++;
       const el = (performance.now() - t0) / 1000;
@@ -277,15 +298,52 @@ export function findFigures(canvas, page) {
     acc = 0;
     for (let x = xb - 1; x >= xa; x--) { acc += colInk[x]; if (acc > total * 0.005) { right = x; break; } }
     if (right - left < W * 0.15) continue;
-    const pad = 10;
-    const cx = Math.max(0, left - pad), cy = Math.max(0, start - pad), cw = Math.min(W, right + pad) - cx, ch = Math.min(H, end + pad) - cy;
-    const scale = Math.min(1, 640 / cw);
-    const out = document.createElement('canvas'); out.width = Math.round(cw * scale); out.height = Math.round(ch * scale);
-    const octx = out.getContext('2d'); octx.fillStyle = '#fff'; octx.fillRect(0, 0, out.width, out.height);
-    octx.drawImage(canvas, cx, cy, cw, ch, 0, 0, out.width, out.height);
-    figs.push({ y0: start, y1: end, w: out.width, h: out.height, img: out.toDataURL('image/jpeg', 0.72) });
+    const f = cropFigure(canvas, left - 10, start - 10, right + 10, end + 10);
+    if (f) figs.push({ ...f, y0: start, y1: end });
   }
   return figs;
+}
+
+// Egy téglalap kivágása a megrajzolt oldalból, JPEG-ként (telefonra méretezve).
+function cropFigure(canvas, x0, y0, x1, y1) {
+  const W = canvas.width, H = canvas.height;
+  const cx = Math.max(0, Math.floor(x0)), cy = Math.max(0, Math.floor(y0));
+  const cw = Math.min(W, Math.ceil(x1)) - cx, ch = Math.min(H, Math.ceil(y1)) - cy;
+  if (cw < 8 || ch < 8) return null;
+  const scale = Math.min(1, 640 / cw);
+  const out = document.createElement('canvas'); out.width = Math.round(cw * scale); out.height = Math.round(ch * scale);
+  const octx = out.getContext('2d'); octx.fillStyle = '#fff'; octx.fillRect(0, 0, out.width, out.height);
+  octx.drawImage(canvas, cx, cy, cw, ch, 0, 0, out.width, out.height);
+  const img = out.toDataURL('image/jpeg', 0.72);
+  out.width = out.height = 0;
+  return { y0: cy, y1: cy + ch, w: Math.round(cw * scale), h: Math.round(ch * scale), img };
+}
+
+// Szöveges PDF-ben a képek önálló objektumok: a rajzolási utasításokból kiszámoljuk a helyüket a lapon.
+// A kulcs a kép saját pixelmérete – a sokszor ismétlődő díszítőelemek így felismerhetők.
+const mul = (a, b) => [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]];
+async function pageImages(pdfjs, page, vp) {
+  const O = pdfjs.OPS;
+  const ops = await page.getOperatorList({ intent: 'print' });
+  const paint = new Set([O.paintImageXObject, O.paintInlineImageXObject, O.paintImageMaskXObject, O.paintImageXObjectRepeat].filter(x => x != null));
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [], out = [];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const f = ops.fnArray[i], a = ops.argsArray[i];
+    if (f === O.save) stack.push(ctm);
+    else if (f === O.restore) ctm = stack.pop() || ctm;
+    else if (f === O.transform) ctm = mul(ctm, a);
+    else if (f === O.paintFormXObjectBegin) { stack.push(ctm); if (a && a[0]) ctm = mul(ctm, a[0]); }
+    else if (f === O.paintFormXObjectEnd) ctm = stack.pop() || ctm;
+    else if (paint.has(f)) {
+      // a kép az egységnégyzetet tölti ki a pillanatnyi transzformációban
+      const pts = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => vp.convertToViewportPoint(ctm[0] * x + ctm[2] * y + ctm[4], ctm[1] * x + ctm[3] * y + ctm[5]));
+      const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+      const iw = a && (a[1] || (a[0] && a[0].width)), ih = a && (a[2] || (a[0] && a[0].height));
+      out.push({ x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), key: `${iw || '?'}x${ih || '?'}` });
+    }
+  }
+  return out;
 }
 
 async function renderCover(doc) {

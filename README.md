@@ -20,6 +20,8 @@ A könyvek **nem részei** ennek a tárolónak. A zagor.hu
 [letöltések oldaláról](https://zagor.hu/index.php?oldal=letoltes) letöltött PDF-et a
 **Könyv betöltése** gombbal töltheted be:
 
+- Szöveges PDF (pl. *A Vértengerek*) néhány másodperc alatt betöltődik, telefonon is; a könyv
+  képeit a PDF-ből emeli ki, és ahhoz a fejezetponthoz teszi, amelyikkel a nyomtatott könyvben szemben áll.
 - Szkennelt PDF esetén a játék szövegfelismeréssel olvassa be (asztali gépen 3–5 perc).
 - A beolvasott könyvet a **Mentés fájlba (.kjk.json)** gombbal elmentheted, és a telefonon
   ezt a fájlt töltheted be (pl. iCloud Drive-ból), így ott nem kell újra felismerni.
@@ -36,6 +38,10 @@ A könyvek **nem részei** ennek a tárolónak. A zagor.hu
 - A feltétel nélküli pontváltozásokat („Vesztesz 2 ÉLETERŐ pontot”) a játék automatikusan végrehajtja,
   és visszavonhatók.
 - Ha elfogy az ÉLETERŐD, vagy halálos fejezetponthoz érsz, a kör véget ér; új körben új karaktert dobsz.
+- A könyv illusztrációi a fejezetpont szövege előtt jelennek meg (koppintásra nagyíthatók); a menüben
+  a **Képek** a már bejárt pontok képeit, a **Mellékletek** a bevezető képeit (pl. térkép) mutatja.
+- *A Vértengerek* saját szabályai: LEGÉNYSÉG ÜTÉSEI és EREJE, tengeri csata (ÜTÉS/ERŐ), 3 kockás
+  legénységpróba, hajónapló (minden új nap +1 ÉLETERŐ, páros/páratlan elágazások), arany és rabszolgák.
 
 A mentések és a betöltött könyvek abban a böngészőben (illetve a főképernyős alkalmazásban) maradnak,
 ahol játszol.

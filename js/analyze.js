@@ -3,7 +3,7 @@
 // visszaadja a szövegbeli helyét, hogy a választás mondata kiemelhető legyen.
 
 const L = '\\p{L}';
-const NUMW = { egy: 1, két: 2, kettő: 2, három: 3, négy: 4, öt: 5, hat: 6, hét: 7, nyolc: 8, kilenc: 9, tíz: 10, tizenegy: 11, tizenkét: 12, tizenkettő: 12, húsz: 20 };
+const NUMW = { egy: 1, két: 2, kettő: 2, három: 3, négy: 4, öt: 5, hat: 6, hét: 7, nyolc: 8, kilenc: 9, tíz: 10, tizenegy: 11, tizenkét: 12, tizenkettő: 12, tizenhárom: 13, tizennégy: 14, tizenöt: 15, tizenhat: 16, tizenhét: 17, tizennyolc: 18, tizenkilenc: 19, húsz: 20, harminc: 30, negyven: 40, ötven: 50 };
 const NUM = `(\\d{1,3}|${Object.keys(NUMW).sort((a, b) => b.length - a.length).join('|')})`;
 const toNum = s => { if (s == null) return null; const t = String(s).toLowerCase(); return /^\d+$/.test(t) ? parseInt(t, 10) : (NUMW[t] ?? null); };
 
@@ -49,10 +49,11 @@ export function fixText(s) {
     .replace(/SZEERENCS/g, 'SZERENCS');
 }
 
-const STAT_WORD = '(ÜGYESSÉG|ÉLETERŐ|ÉLETERE|SZERENCSÉ|SZERENCSE)';
-const STAT_KEY = w => /^ÜGY/.test(w) ? 'skill' : /^ÉLET/.test(w) ? 'stamina' : 'luck';
+// (A Vértengerekben a legénységnek is vannak pontjai: LEGÉNYSÉG ÜTÉSEI, LEGÉNYSÉG EREJE.)
+const STAT_WORD = '(ÜGYESSÉG|ÉLETERŐ|ÉLETERE|SZERENCSÉ|SZERENCSE|LEGÉNYSÉG(?:I|ED|E)?\\s+(?:ÜTÉS|ERŐ|EREJ))';
+const STAT_KEY = w => /^ÜGY/.test(w) ? 'skill' : /^ÉLET/.test(w) ? 'stamina' : /^LEG/.test(w) ? (/ÜTÉS/.test(w) ? 'strike' : 'crew') : 'luck';
 
-export const STAT_NAMES = { skill: 'ÜGYESSÉG', stamina: 'ÉLETERŐ', luck: 'SZERENCSE' };
+export const STAT_NAMES = { skill: 'ÜGYESSÉG', stamina: 'ÉLETERŐ', luck: 'SZERENCSE', strike: 'LEGÉNYSÉG ÜTÉSEI', crew: 'LEGÉNYSÉG EREJE' };
 
 // Mondat-/tagmondat-határok (pont, felkiáltó- és kérdőjel, pontosvessző), eltolásokkal.
 export function splitClauses(text) {
@@ -76,31 +77,33 @@ const low = s => s.toLowerCase();
 const RX = {
   luckTest: /próbára\s+(?:\S+\s+){0,2}?(?:a\s+)?\S{0,3}?zerencs|szerencs\S*\s+próbára|szerencsepróbá|próbáld\s+ki\s+(?:a\s+)?szerencs/,
   skillTest: /próbára\s+(?:\S+\s+){0,2}?(?:az\s+)?\S{0,4}?gyes+ég|ügyess\S*\s+próbára|ügyességpróbá|próbáld\s+ki\s+(?:az\s+)?ügyess/,
-  dice1: /dobj\s+(?:egy|1)\s*(?:dobó)?kocká|dobj\s+(?:egy|1)\s+kocká|egy\s+kockával\s+dob/,
-  dice2: /dobj\s+(?:két|kettő|2)\s*(?:dobó)?kocká|két\s+kockával\s+dob/,
+  dice1: /dob[ji]\s+(?:egy|1)\s*(?:dobó)?kocká|egy\s+kockával\s+dob/,
+  dice2: /dob[ji]\s+(?:két|kettő|2)\s*(?:dobó)?kocká|két\s+kockával\s+dob/,
+  dice3: /dob[ji]\s+(?:három|hám|3)\s*(?:dobó)?kocká|három\s+kockával\s+dob/,
   luckNo: /nincs\s+szerencséd|balszerencsés|nem\s+vagy\s+szerencsés|szerencsétlen|nem\s+volt\s+szerencséd|nem\s+jártál\s+szerencsével|nem\s+kísér\s+szerencse|szerencséd\s+cserben/,
   luckYes: /szerencséd\s+van|szerencsés\s+vagy|szerencsés\s+voltál|volt\s+szerencséd|szerencsével\s+jár|szerencse\s+kísér|ha\s+szerencsés/,
   testNo: /sikertelen|nem\s+sikerül|nem\s+sikerült|kudarc|elbuk|ha\s+nem\s+(?:jár|teljesít)/,
   testYes: /sikeres|sikerül|sikerült|teljesíted|ha\s+igen/,
-  win: /legyőz|győzöl|győztél|győzelm|győzedelm|végz(?:el|ed|tél|ett)|végez(?:n|tél|tek|ted)|megölöd|megölnöd|elpusztít|nullára|(?:^|[^\d])0-ra|legyűr|ha\s+nyersz|megnyered\s+a\s+(?:harcot|csatát|küzdelmet)|túléled\s+a\s+(?:harcot|csatát|küzdelmet)|ellenfeled\s+(?:meghal|holtan)|ha\s+sikerül\s+(?:legyőzn|megöln|elpusztítan|végezn|levágn)/,
+  win: /legyőz|győzöl|győztél|győzelm|győzedelm|\bgyőz(?:nek|tök|tetek|ünk|ött(?:ök|etek)?)?\b|visszaveri?\s+a\s+támadás|végz(?:el|ed|tél|ett)|végez(?:n|tél|tek|ted)|megölöd|megölnöd|elpusztít|nullára|(?:^|[^\d])0-ra|legyűr|ha\s+nyersz|megnyered\s+a\s+(?:harcot|csatát|küzdelmet)|túléled\s+a\s+(?:harcot|csatát|küzdelmet)|ellenfeled\s+(?:meghal|holtan)|ha\s+sikerül\s+(?:legyőzn|megöln|elpusztítan|végezn|levágn)/,
   flee: /elmenekül|elmenekül|menekülni|menekülsz|menekülnél|elfut(?:sz|nál|hatsz)|meghátrál|visszavonul/,
   cond: /^\s*(?:—\s*)?(?:ha|hogyha|amennyiben|hacsak|feltéve,?\s+hogy)\s+(?:(?:már|korábban|előzőleg|valaha)\s+)?(?:van|nálad|rendelkez|birtok|ismered|tudod|szerepel|megvan|visel|hordasz|magadnál|nincs|nem\s+(?:rendelkez|tudod|ismered|szerepel)|olvastad|jártál|találkoztál|megtaláltad|megszerezted|láttad|hallottad|elhoztad|felvetted|vetted|ittál|ettél|megittad|megetted)/,
   returnTo: /lapozz\s+vissza/,
   // (csak választás nélküli pontban számít: ott a halál biztos, máshol csak jelzés)
-  death: /kalandod\s+(?:itt\s+)?(?:véget\s+ér|véget\s+ért|befejeződött|itt\s+ér\s+véget)|meghaltál|meghalsz|halott\s+vagy|leled\s+halálod|véged\s+van|életed\s+(?:itt\s+ér\s+véget|kialszik|véget\s+ér)|utad\s+itt\s+véget\s+ér|meg\s+kell\s+halnod|kimúlsz|kimúltál|utolsó\s+(?:dolog|gondolatod|lélegzet)|haldokl|halál\s+vár\s+rád|végez\s+veled|megsemmisít(?:enek)?\.?$|szénné\s+ég|megfulladsz|meg\s+nem\s+fulladsz|örökké\s+bennragadsz|örökre\s+(?:fogva|bennragadsz|itt\s+maradsz)|holtan\s+esel|élettelenül/,
+  death: /kaland(?:od|otok)\s+(?:itt\s+|véres\s+|szomorú\s+)?(?:véget\s+ér|véget\s+ért|befejeződött|itt\s+ér\s+véget)|nem\s+folytathatod\s+(?:tovább\s+)?(?:az\s+)?utadat|fogadást\s+elvesztetted|elvesztetted\s+a\s+fogadást|\bvesztettél\b|meghaltál|meghalsz|halott\s+vagy|leled\s+halálod|véged\s+van|életed\s+(?:itt\s+ér\s+véget|kialszik|véget\s+ér)|utad\s+itt\s+véget\s+ér|meg\s+kell\s+halnod|kimúlsz|kimúltál|utolsó\s+(?:dolog|gondolatod|lélegzet)|haldokl|halál\s+vár\s+rád|végez\s+veled|megsemmisít(?:enek)?\.?$|szénné\s+ég|megfulladsz|meg\s+nem\s+fulladsz|örökké\s+bennragadsz|örökre\s+(?:fogva|bennragadsz|itt\s+maradsz)|holtan\s+esel|élettelenül/,
   numberInput: /megfelelő\s+fejezetpont|annak\s+megfelelő|számú\s+fejezetpont|számmal\s+egyező|a\s+válasznak\s+megfelelő|add?\s+össze|összeadod|betűinek|betűit|kódszám|amelyik\s+számot|azzal\s+a\s+számmal/,
   combatEvent: /harci\s+kör|támadóerő|megsebez|eltalál|sebet\s+ejt/,
 };
 
 function diceSet(clauseLow, sides) {
-  const max = sides === 2 ? 12 : 6, min = sides === 2 ? 2 : 1;
+  const max = sides * 6, min = sides;
   const all = []; for (let i = min; i <= max; i++) all.push(i);
   // csak a lapozási utasítás előtti rész számít („Ha az eredmény 6, lapozz az 54-re, … 4 ÉLETERŐ…”)
   const tm = TARGET_RE_LOW().exec(clauseLow);
   let head = tm ? clauseLow.slice(0, tm.index) : clauseLow;
-  // csak a feltétel része: a „ha”-tól az első vesszőig („Ha 6-ot dobsz, vesztesz 3 ÉLETERŐ pontot” → „ha 6-ot dobsz”)
+  // csak a feltétel része: a „ha”-tól az első vesszőig („Ha 6-ot dobsz, vesztesz 3 ÉLETERŐ pontot” → „ha 6-ot dobsz”);
+  // a felsorolás vesszői nem számítanak („Ha a kapott szám 1, 2 vagy 3, …”)
   const hi = head.search(/(?:^|[^\p{L}])ha\s/u);
-  if (hi >= 0) { head = head.slice(hi); const ci = head.indexOf(','); if (ci > 0) head = head.slice(0, ci); }
+  if (hi >= 0) { head = head.slice(hi); const ci = head.search(/,(?!\s*\d{1,2}\s*(?:,|vagy\b|és\b))/); if (ci > 0) head = head.slice(0, ci); }
   if (/páratlan/.test(head)) return all.filter(n => n % 2);
   if (/páros/.test(head)) return all.filter(n => !(n % 2));
   const set = new Set();
@@ -133,6 +136,7 @@ function labelOf(clauseText) {
     .replace(/\s+([.!?])$/, '$1')
     .replace(/^[\s—–-]+/, '')
     .replace(/[.!]$/, '')
+    .replace(/\s*[,;:—–-]\s*$/, '')
     .trim();
 }
 
@@ -140,12 +144,15 @@ function labelOf(clauseText) {
 const STAT_LINE = /^(.*?\S)\s+ÜGYESSÉG\s+(\d{1,2}|\?)\s+ÉLETERŐ\s*(\d{1,2}|\?)\s*$/u;
 const TABLE_HEAD = /^ÜGYESSÉG\s+ÉLETERŐ$/u;
 const TABLE_ROW = /^(.*?\S)\s+(\d{1,2}|\?)(?:\s+(\d{1,2})|\s*(\?))\s*$/u;
+const CREW_LINE = /^(.*?\S)\s+ÜTÉS\s+(\d{1,2}|\?)\s+ERŐ\s*(\d{1,2}|\?)\s*$/u;
+const CREW_HEAD = /^ÜTÉS\s+ERŐ$/u;
+const OPPOSITE = { luck_yes: 'luck_no', luck_no: 'luck_yes', skill_yes: 'skill_no', skill_no: 'skill_yes', vs_lt: 'vs_ge', vs_ge: 'vs_lt', vs_le: 'vs_gt', vs_gt: 'vs_le' };
 
 // ---- hatások ----------------------------------------------------------------
 const LOSS = /veszt|veszít|vonj|vonnod|levon|vond\s+le|csökk|elveszt|elveszíted|kárt\s+okoz|sérül|fizet|elhasznál|elfogyaszt/;
 const GAIN = /nyer|kapsz|kapj|adj|add\s+hozzá|hozzáad|növel|növek|visszanyer|visszakap|gyógy|visszaállít|helyreáll|emeld|emelkedik|\bnő\b|találsz|szerzel|szereztél/;
 const COMBAT_RULE = /helyett|minden\s+(?:\S+\s+)?(?:harci\s+)?kör|valahányszor|ha\s+eltalál|amikor\s+eltalál|támadóerő|harci\s+körben|ellenfeled\s+(?:minden|ha)/;
-const RECURRING = /\bminden\b[^.]*?(?:kor|alkalommal)\b|valahányszor/;
+const RECURRING = /\bminden\b[^.]*?(?:kor|alkalommal)\b|valahányszor|\bminden\s+[^.,]{0,40}?(?:után|ért)\b|fejenként|darabonként/;
 // feltételes / jövőbeli / leíró („Ekkor is elveszted…”, „6 ÉLETERŐ pontot fog majd visszaállítani”)
 const HYPO = /\bekkor\b|\bilyenkor\b|használhatod|szokott\s+\d|következő\s+alkalommal|amikor\s+majd|legközelebb|\bfog(?:sz|ja|od)?\s+(?:majd\s+)?(?:\p{L}+\s+){0,3}\p{L}+ni\b|\bmajd\b[^.]*\bfog|-?hatod\s+majd/u;
 // a hatás nem a játékost éri, hanem az ellenfelet
@@ -187,9 +194,65 @@ function statPairs(clause) {
   return pairs.sort((a, b) => a.start - b.start);
 }
 
+// Dobás egy pontszám ellen („Dobj három kockával. Ha a kapott összeg kevesebb, mint LEGÉNYSÉGED EREJE…”):
+// melyik viszonyról szól a mondat? lt: kevesebb, le: ugyanannyi vagy kevesebb, gt: több, ge: ugyanannyi vagy több
+const VS_MINT = /mint\s+(?:a\s+|az\s+)?(?:legénység|életerő|ügyesség|szerencs)/;
+function vsRel(ctx) {
+  if (!VS_MINT.test(ctx)) return null;
+  if (/ugyanannyi\s+vagy\s+(?:annál\s+)?(?:több|nagyobb|magasabb)|nem\s+kevesebb/.test(ctx)) return 'ge';
+  if (/ugyanannyi\s+vagy\s+(?:annál\s+)?(?:kevesebb|kisebb|alacsonyabb)|nem\s+(?:több|nagyobb)/.test(ctx)) return 'le';
+  if (/(?:kevesebb|kisebb|alacsonyabb)\p{L}*,?\s+mint/u.test(ctx)) return 'lt';
+  if (/(?:több|nagyobb|magasabb)\p{L}*,?\s+mint/u.test(ctx)) return 'gt';
+  return null;
+}
+// melyik pontszám ellen dobunk (a könyv nagybetűs szavával)
+function vsStatOf(all) {
+  const m = /(?:kevesebb|kisebb|alacsonyabb|több|nagyobb|magasabb|ugyanannyi)[^.]{0,40}?mint\s+(?:a\s+|az\s+)?(LEGÉNYSÉG\p{L}*\s+ER\p{L}*|ÉLETERŐ|ÜGYESSÉG|SZERENCSÉ?)/u.exec(all);
+  return m ? STAT_KEY(m[1]) : null;
+}
+// Hajónapló-feltétel („Ha a HAJÓNAPLÓDBAN lévő szám páros”, „50-nél több utazási napod van”)
+const LOG_CTX = /hajónapló|utazási\s+nap|napok\s+száma|napod\s+van/;
+function logCond(ctx, inherit) {
+  if (!LOG_CTX.test(ctx) && !inherit) return null;
+  let m;
+  if (/páratlan/.test(ctx)) return { op: 'odd' };
+  if (/páros/.test(ctx)) return { op: 'even' };
+  if ((m = /(\d{1,3})-?(?:nál|nél)\s+(?:több|hosszabb)/.exec(ctx))) return { op: 'gt', n: +m[1] };
+  if ((m = /(\d{1,3})\s+(?:vagy\s+)?(?:ennél|annál)?\s*(?:kevesebb|rövidebb)/.exec(ctx)) && /vagy/.test(m[0])) return { op: 'le', n: +m[1] };
+  if ((m = /(\d{1,3})-?(?:nál|nél)\s+(?:kevesebb|rövidebb)/.exec(ctx))) return { op: 'lt', n: +m[1] };
+  if ((m = /(\d{1,3})\s+vagy\s+(?:ennél\s+|annál\s+)?több/.exec(ctx))) return { op: 'ge', n: +m[1] };
+  if ((m = /több,?\s+mint\s+(\d{1,3})/.exec(ctx))) return { op: 'gt', n: +m[1] };
+  return null;
+}
+export function logHolds(c, days) {
+  if (!c) return false;
+  return c.op === 'odd' ? days % 2 === 1 : c.op === 'even' ? days % 2 === 0 : c.op === 'gt' ? days > c.n : c.op === 'ge' ? days >= c.n : c.op === 'lt' ? days < c.n : c.op === 'le' ? days <= c.n : false;
+}
+export const logText = c => c.op === 'odd' ? 'páratlan' : c.op === 'even' ? 'páros' : `${{ gt: 'több mint', ge: 'legalább', lt: 'kevesebb mint', le: 'legfeljebb' }[c.op]} ${c.n}`;
+// Hajónapló: utazási napok („növeld 5-tel utazási napjaid számát”, „3 nappal növeld utazásod idejét”, „nyersz 1 napot”)
+const DAY_CTX = /hajónapló|utazási\s+(?:nap|idő)|utazásod\s+(?:idejét|napjai)|töltött\s+napok|napjaid/;
+function dayDelta(seg) {
+  let m;
+  if ((m = /nyersz\s+(\d{1,2}|egy|két)\s+napot/.exec(seg))) return -toNum(m[1]);
+  if (!DAY_CTX.test(seg)) return null;
+  m = /(\d{1,2})\s*(?:-?\s*(?:gyel|vel|val|tel|tal|mal|mel|zal|zel|cal|cel|el|al)\b|\s+nap(?:pal|ot)\b)/.exec(seg);
+  if (!m) return null;
+  if (/növel|hozzáad|adj\s+hozzá|eltelt|eltöltesz|elvesztegetsz|telik/.test(seg)) return +m[1];
+  if (/csökkent|vonj\s+le|vond\s+le|levon/.test(seg)) return -m[1];
+  return null;
+}
+// „Dobj két kockával, és vond le a kapott összeget ÉLETERŐDBŐL” – kockával számolt pontváltozás
+const ROLL_FX = new RegExp(`[Dd]ob[ji]\\s+(egy|két|három|1|2|3)\\s+(?:dobó)?kockával[^.]{0,60}?(?:(vond|vonj)\\s+le|ad[dj]?\\s+hozzá)\\s+(?:[^.]{0,40}?\\s)?${STAT_WORD}`, 'u');
+// Rabszolgák (zsákmány) – egyszerű darabszámok; az eladás képlete külön
+const SLAVE_RE = new RegExp(`${NUM}\\s+(?:${L}+\\s+)?rabszolgá${L}*`, 'giu');
+// a később rabszolgaként eladandó foglyok („3 remek fickót találsz, akiket majd a rabszolgapiacon…”)
+const CAPTIVE_RE = new RegExp(`${NUM}\\s+(?:${L}+\\s+){0,2}(?:fickó|legény|ember|pap|fogoly|foglyo|férfi|matróz|katoná|harcos)${L}*`, 'giu');
+const MULW = s => { const t = String(s).toLowerCase().replace(/-?(?:tel|tal|vel|val|cal|cel|mal|mel|zal|zel|gyel|el|al)$/, ''); return toNum(t); };
+
 // Melyik próba-kimenethez kötött egy hatás („Ha nincs szerencséd, vesztesz 2 ÉLETERŐ pontot”)?
-function whenOf(cl, hasLuck, hasSkill) {
+function whenOf(cl, hasLuck, hasSkill, vsStat) {
   const s = cl.replace(/^[\s—–-]+/, '');
+  if (vsStat && /^(?:ha|amennyiben)\s/.test(s)) { const r = vsRel(s); if (r) return 'vs_' + r; }
   if (hasLuck && RX.luckNo.test(s)) return 'luck_no';
   if (hasLuck && RX.luckYes.test(s)) return 'luck_yes';
   if (hasSkill && /^(?:ha|amennyiben)\s/.test(s) && RX.testNo.test(s)) return 'skill_no';
@@ -201,8 +264,8 @@ const FLEE_DECL = /elmenekülhetsz|el\s+is\s+menekülhetsz|menekülni\s+is\s+pr�
 const COND_ANY =/(?:,|\bés)\s+(?:ha\s+)?(?:szerepel|van\s+nálad|nálad\s+van|rendelkezel|birtokodban\s+van|ismered\s+a|megvan\s+a)|kalandlapodon\s+(?:a|az|szerepel)|szerepel\s+(?:a\s+)?kalandlapodon/;
 
 // csak pénz: Aranytallér, aranypénz, aranyérme, „5 aranyat” (az „aranygyűrű” nem)
-const GOLD_RE = new RegExp(`${NUM}\\s+(?:darab\\s+)?(?:arany(?:tallér|pénz|érmé)${L}*|arany(?:at|ak|ban)\\b|tallér${L}*)`, 'giu');
-const CURRENCY = /aranytallér|aranypénz|aranyérmé|\d+\s+aranyat|tallér/;
+const GOLD_RE = new RegExp(`${NUM}\\s+(?:darab\\s+)?(?:arany\\s?(?:tallér|pénz|érmé)${L}*|arany(?:at|ak|ban)\\b|tallér${L}*)`, 'giu');
+const CURRENCY = /aranytallér|arany\s+tallér|aranypénz|aranyérmé|\d+\s+aranyat|tallér/;
 const FOOD_RE = new RegExp(`${NUM}\\s+(?:adag(?:nyi)?\\s+)?(?:élelm${L}*|étel${L}*|élelmiszer${L}*|étkezés${L}*|adag${L}*)`, 'giu');
 
 function itemGuess(sentence) {
@@ -236,21 +299,37 @@ export function analyzeSection(paras0, n, book = {}) {
   const all = paras.join(' ');
   const allLow = low(all);
   const hasLuck = RX.luckTest.test(allLow), hasSkill = RX.skillTest.test(allLow);
-  const diceN = RX.dice2.test(allLow) ? 2 : RX.dice1.test(allLow) ? 1 : 0;
+  // a későbbre szóló dobás-szabályok („Mostantól ha bármikor három kockával dobsz…”) nem most dobandók
+  const RULE_S = /mostantól|bármikor|minden\s+alkalommal|legközelebb|amikor\s+azt\s+az\s+utasítást/;
+  const diceTxt = splitClauses(allLow).filter(c => !RULE_S.test(c.text)).map(c => c.text).join(' ');
+  const diceN = RX.dice3.test(diceTxt) ? 3 : RX.dice2.test(diceTxt) ? 2 : RX.dice1.test(diceTxt) ? 1 : 0;
+  // A Vértengerek: tartós módosítás a legénységpróbákhoz (−2 az összegből, csak két kocka, „vedd úgy, mintha…”)
+  for (const c of splitClauses(allLow)) {
+    if (!RULE_S.test(c.text) || !/három\s+kockával/.test(c.text) || !/legénység/.test(c.text)) continue;
+    let m; const r = { text: c.text.trim(), cond: /^\W*ha\s/.test(c.text) && !/^\W*ha\s+bármikor/.test(c.text) };
+    if ((m = /vonj\s+le\s+(\d+)-?\p{L}*\s+(?:pontot\s+)?(?:az\s+|a\s+dobott\s+)?összegből/u.exec(c.text))) r.mod = -m[1];
+    if (/csak\s+két\s+kockával/.test(c.text)) r.dice = 2;
+    if (/ne\s+dobj[^.]*nagyobb\s+lenne/.test(c.text)) r.auto = 'gt';
+    if ((m = /legközelebb/.exec(c.text))) r.once = true;
+    if (r.mod || r.dice || r.auto) out.crewRule = r;
+  }
+  // dobás egy pontszám ellen (pl. 3 kocka a LEGÉNYSÉG EREJE ellen)
+  const vsStat = diceN ? vsStatOf(all) : null;
 
-  // 1. kör: ellenfél-adatsorok (a választások besorolásához előre kell tudni, van-e harc)
+  // 1. kör: ellenfél-adatsorok (a választások besorolásához előre kell tudni, van-e harc);
+  // a tengeri csatában ÜTÉS és ERŐ áll az ÜGYESSÉG és az ÉLETERŐ helyén
   const kinds = [];
-  let inTable = false;
+  let inTable = false, tableCrew = false;
   for (const text of paras) {
-    let m;
-    if ((m = STAT_LINE.exec(text))) {
-      out.enemies.push({ name: m[1].replace(/[—–-]\s*$/, '').trim(), skill: toNum(m[2]), stamina: toNum(m[3]) });
-      kinds.push({ kind: 'stat', name: m[1].trim(), skill: m[2], stamina: m[3] }); inTable = false;
-    } else if (TABLE_HEAD.test(text)) { kinds.push({ kind: 'thead' }); inTable = true; }
+    let m, crew = false;
+    if ((m = STAT_LINE.exec(text)) || ((m = CREW_LINE.exec(text)) && (crew = true))) {
+      out.enemies.push({ name: m[1].replace(/[—–-]\s*$/, '').trim(), skill: toNum(m[2]), stamina: toNum(m[3]), ...(crew ? { crew: true } : {}) });
+      kinds.push({ kind: 'stat', name: m[1].trim(), skill: m[2], stamina: m[3], crew }); inTable = false;
+    } else if (TABLE_HEAD.test(text) || CREW_HEAD.test(text)) { tableCrew = CREW_HEAD.test(text); kinds.push({ kind: 'thead', crew: tableCrew }); inTable = true; }
     else if (inTable && (m = TABLE_ROW.exec(text)) && text.length < 60) {
       const st = m[3] || m[4];
-      out.enemies.push({ name: m[1].trim(), skill: toNum(m[2]), stamina: toNum(st) });
-      kinds.push({ kind: 'trow', name: m[1].trim(), skill: m[2], stamina: st });
+      out.enemies.push({ name: m[1].trim(), skill: toNum(m[2]), stamina: toNum(st), ...(tableCrew ? { crew: true } : {}) });
+      kinds.push({ kind: 'trow', name: m[1].trim(), skill: m[2], stamina: st, crew: tableCrew });
     } else { kinds.push(null); inTable = false; }
   }
 
@@ -264,7 +343,7 @@ export function analyzeSection(paras0, n, book = {}) {
 
     const clauses = splitClauses(text);
     const spans = [];
-    let condPrev = false, fleeMode = false;
+    let condPrev = false, fleeMode = false, paraKind = null;
     clauses.forEach((cl, ci) => {
       const cLow = low(cl.text);
       const re = TARGET_RE_LOW();
@@ -276,57 +355,84 @@ export function analyzeSection(paras0, n, book = {}) {
       if (FLEE_DECL.test(cLow) && !targets.length) fleeMode = true; // „Ha akarsz, Elmenekülhetsz…” – az utána jövő irányok menekülési utak
       const startsCond = /^[\s—–-]*(?:ha|hogyha|amennyiben|hacsak|feltéve)\s/.test(cLow);
       const firstChoice = out.choices.length;
-      for (const tg of targets) {
-        let kind = 'plain', dice = null, cond = '', condType = null;
+      // több cél egy mondatban („Ha páros – lapozz a 255-re, ha páratlan – lapozz a 212-re”): mindegyiket a saját darabja minősíti
+      const multi = targets.filter(t => !t.back).length > 1;
+      // (a hajónapló-feltétel a pontosvessző utáni „ha ez a szám páros” tagmondatra is átnyúlik)
+      let pieceFrom = 0, prevKind = paraKind === 'log' ? 'log' : null;
+      targets.forEach((tg, ti) => {
+        let kind = 'plain', dice = null, cond = '', condType = null, log = null;
         if (tg.back) {
           kind = 'back';
         } else if (LATER_RE.test(cLow.slice(0, tg.at)) && !RX.numberInput.test(cLow.slice(0, tg.at))) {
           // „Ha valaha úgy döntenél… jegyezd fel… majd lapozz a 235-re” – nem most választható, hanem eszköz-használat
           out.suggestions.push({ type: 'use', target: tg.num, name: itemGuess(paras.slice(Math.max(0, pi - 1), pi + 1).join(' ')), text: cl.text.trim(), para: pi, later: true });
-          continue;
+          return;
+        }
+        let piece = cl.text, pStart = cl.start, own = false;
+        if (multi && !tg.back) {
+          const from = pieceFrom, to = ti === targets.length - 1 ? cl.text.length : tg.at + tg.len;
+          pieceFrom = tg.at + tg.len;
+          const lead = /^[\s,;:—–-]*/.exec(cl.text.slice(from))[0].length;
+          piece = cl.text.slice(from + lead, to); pStart = cl.start + from + lead; own = true;
         }
         // a lapozási utasítás nélküli tagmondat dönt; a csupasz „Lapozz a 262-re.” az előző feltételes mondatot örökli
-        let start = cl.start;
-        let label = tg.back ? cl.text.trim() : labelOf(cl.text);
+        let start = pStart;
+        let label = tg.back ? cl.text.trim() : labelOf(piece);
+        if (own && !label) { piece = cl.text; start = pStart = cl.start; label = labelOf(cl.text); own = false; } // a darabnak nincs saját feltétele
         let ctx = low(label);
+        const pLow = low(piece);
         const prev = ci > 0 ? clauses[ci - 1] : null;
         const prevHasTarget = prev && TARGET_RE_LOW().test(prev.text);
         if (!label && prev && !prevHasTarget && (/\?$/.test(prev.text.trim()) || /^[\s—–-]*(?:ha|amennyiben|hogyha)\s/i.test(prev.text))) {
           start = prev.start; label = labelOf(prev.text); ctx = low(prev.text);
         }
         if (!tg.back) {
-          if (RX.returnTo.test(cLow)) kind = 'return';
-          if ((hasLuck || RX.luckTest.test(ctx)) && RX.luckNo.test(ctx)) kind = 'luck_no';
+          let rel;
+          if (RX.returnTo.test(pLow)) kind = 'return';
+          if ((log = logCond(ctx, prevKind === 'log'))) kind = 'log';
+          else if (vsStat && (rel = vsRel(ctx))) kind = 'vs_' + rel;
+          else if ((hasLuck || RX.luckTest.test(ctx)) && RX.luckNo.test(ctx)) kind = 'luck_no';
           else if ((hasLuck || RX.luckTest.test(ctx)) && RX.luckYes.test(ctx)) kind = 'luck_yes';
-          else if (diceN && /\d\s*[-–]\s*\d|\bha\s+(?:az\s+(?:eredmény|összeg|dobás)\s+)?\d|páros|páratlan|\d-\p{L}*\s+dob/u.test(ctx) && (dice = diceSet(cLow, diceN)).length) kind = 'dice';
+          else if (diceN && /\d\s*[-–]\s*\d|\bha\s+(?:az\s+(?:eredmény|összeg|dobás)\s+)?\d|(?:kapott|dobott)\s+(?:szám|összeg|eredmény|érték)\p{L}*\s+\d|páros|páratlan|\d-\p{L}*\s+dob/u.test(ctx) && (dice = diceSet(multi ? pLow : cLow, diceN)).length) kind = 'dice';
           else if (out.enemies.length && RX.win.test(ctx)) kind = 'combat_win';
           else if (out.enemies.length && (RX.flee.test(ctx) || /így\s+(?:tennél|teszel|döntesz|döntenél)/.test(ctx) || fleeMode)) kind = 'flee';
           else if (hasSkill && RX.testNo.test(ctx)) kind = 'skill_no';
           else if (hasSkill && RX.testYes.test(ctx)) kind = 'skill_yes';
           else if (RX.flee.test(ctx) && /harc|csat|küzd|ellenf/.test(allLow)) kind = 'flee';
           if (kind !== 'dice') dice = null;
-          // az előző, cél nélküli feltételes mondat öröklése (pl. a próba kimenete)
-          if ((kind === 'plain' || kind === 'return') && condCtx && condCtx.when && /^(luck|skill)_/.test(condCtx.when)) kind = condCtx.when;
+          // „…, ha nem / ha nincs – lapozz a …”: az előző darab ellentéte
+          if ((kind === 'plain' || kind === 'return') && multi && OPPOSITE[prevKind] && /^[\s,;—–-]*(?:ha\s+(?:nem|nincs)|különben|egyébként|ellenkező\s+esetben)\b/.test(pLow)) kind = OPPOSITE[prevKind];
+          // az előző, cél nélküli feltételes mondat öröklése (pl. a próba kimenete);
+          // a dobás-kimenet (vs) csak a saját feltétel nélküli „Lapozz a …” mondatra száll át
+          if ((kind === 'plain' || kind === 'return') && condCtx && condCtx.when && /^(luck|skill|vs)_/.test(condCtx.when) && !(/^vs_/.test(condCtx.when) && /^(?:ha|amennyiben|hogyha)\s/.test(ctx))) kind = condCtx.when;
           if ((kind === 'plain' || kind === 'return') && !/nem\s+tudod(?:\s+a\s+(?:választ|megoldást))?\s*,?\s*vagy/.test(ctx)) {
             if (NOT_YET.test(ctx)) { kind = 'conditional'; condType = 'notVisited'; cond = label; }
-            else if (RX.cond.test(ctx) || COND_ANY.test(ctx) || COND_MORE.test(ctx)) { kind = 'conditional'; cond = label; condType = /fizet|aranytallér/.test(ctx) ? 'gold' : 'item'; }
+            else if (RX.cond.test(ctx) || COND_ANY.test(ctx) || COND_MORE.test(ctx)) { kind = 'conditional'; cond = label; condType = /fizet|aranytallér|arany\s+tallér/.test(ctx) ? 'gold' : 'item'; }
           }
         }
-        out.choices.push({ target: tg.num, kind, dice, cond, condType, label, para: pi, start, end: cl.end, ci, uncertain: tg.fix && tg.fix.n == null ? tg.fix : null, raw: tg.fix && tg.fix.fixed ? tg.fix.raw : null });
-        spans.push({ start, end: cl.end, choice: out.choices.length - 1 });
-      }
+        prevKind = kind;
+        const end = own ? pStart + piece.length : cl.end;
+        out.choices.push({ target: tg.num, kind, dice, cond, condType, log, label, para: pi, start, end, ci, uncertain: tg.fix && tg.fix.n == null ? tg.fix : null, raw: tg.fix && tg.fix.fixed ? tg.fix.raw : null });
+        spans.push({ start, end, choice: out.choices.length - 1 });
+      });
+      paraKind = targets.length ? prevKind : null;
       // hatások ebben a tagmondatban (az aktív feltétel-környezet is számít: próba-kimenetnél a célig,
       // általános „Ha …” mondatnál csak a közvetlenül utána álló, hatással kezdődő mondatra)
       const effectLead = /^[\s—–-]*(?:vesztesz|veszítesz|veszíts|vonj|vond|csökkentsd|nyersz|adj|növeld|kapsz)\b/.test(cLow);
       const ctxApplies = condCtx && (condCtx.when || (condCtx.fresh && effectLead));
       const conditional = /(^|\s)(ha|hogyha|amennyiben|hacsak)\s/.test(cLow) || condPrev || !!ctxApplies;
-      const when = whenOf(cLow, hasLuck, hasSkill) || (ctxApplies && condCtx.when) || null;
+      const when = whenOf(cLow, hasLuck, hasSkill, vsStat) || (ctxApplies && condCtx.when) || null;
       const effStart = out.effects.length;
       const combatRule = COMBAT_RULE.test(cLow);
       const forFight = /a\s+harc\s+(?:idejére|során|alatt|végéig)|a\s+küzdelem\s+(?:idejére|során|alatt)/.test(cLow);
       const pairs = statPairs(cl.text);
       const hypo = HYPO.test(cLow);
-      const whenDice = diceRow(text);
+      let whenDice = diceRow(text);
+      // „Ha a kapott szám 1, 2 vagy 3, 2-vel növeld…” – a dobás eredményéhez kötött hatás
+      if (!whenDice && diceN && startsCond && !when && /dob|kapott|eredmény/.test(cLow) && !LOG_CTX.test(cLow.split(',')[0])) {
+        const ds = diceSet(cLow, diceN);
+        if (ds.length && ds.length < diceN * 5 + 1) whenDice = ds;
+      }
       for (const p of pairs) {
         if (p.enemy) continue;
         // a pár saját vesszős szakasza dönt az irányról és a harci szabályról („Nyersz 2 SZERENCSE pontot…, és a harcok során…”)
@@ -342,6 +448,9 @@ export function analyzeSection(paras0, n, book = {}) {
         const restore = /visszaállít|eredeti\s+értékére|kezdeti\s+értékére/.test(sLow);
         out.effects.push({ type: initial && !restore ? 'initial' : 'stat', stat: p.stat, delta: loss ? -p.n : p.n, cond: (conditional || hypo) && !when && !whenDice, when: whenDice ? 'dice' : when, dice: whenDice, para: pi, text: cl.text.slice(p.start, p.end), choice: targets.length ? out.choices.length - 1 : null });
       }
+      // kockával számolt pontváltozás: a játékos dob, az eredményt a játék vonja le / adja hozzá
+      { const rm = ROLL_FX.exec(cl.text);
+        if (rm && !RECURRING.test(cLow) && !HYPO.test(cLow)) out.effects.push({ type: 'stat', stat: STAT_KEY(rm[3].toUpperCase()), delta: rm[2] ? -1 : 1, roll: toNum(rm[1]), cond: (conditional || hypo) && !when && !whenDice, when: whenDice ? 'dice' : when, dice: whenDice, para: pi, text: rm[0], choice: targets.length ? out.choices.length - 1 : null }); }
       // arany, élelem
       for (const [re, kind] of [[GOLD_RE, 'gold'], [FOOD_RE, 'food']]) {
         re.lastIndex = 0;
@@ -350,7 +459,8 @@ export function analyzeSection(paras0, n, book = {}) {
           const nAmt = toNum(g[1]);
           if (nAmt == null) continue;
           // ajánlat vagy esetleges nyeremény nem jóváírás; az élelemnél a „megkínál” valódi ajándék
-          const goldGain = (kind === 'food' ? /talál|kapsz|kapod|zsebre|elteszed|elrakod|magadhoz|adj\s+hozzá|szerzel|felveszed|összeszed|megkínál|kínál/ : /talál|kapsz|kapod|nyersz|zsebre|elteszed|elrakod|magadhoz\s+veszed|adj\s+hozzá|szerzel|jutalm|felveszed|összeszed/).test(cLow) && !/lehet\s+nyerni|nyerhetsz|ajánl/.test(cLow);
+          if (RECURRING.test(cLow)) continue; // „Minden 20 Arany Tallér után…”, „fejenként 10 Arany Tallért” – egységár, nem jóváírás
+          const goldGain = (kind === 'food' ? /talál|kapsz|kapod|zsebre|elteszed|elrakod|magadhoz|adj\s+hozzá|szerzel|felveszed|összeszed|megkínál|kínál/ : /talál|kapsz|kapod|nyersz|zsebre|elteszed|elrakod|magadhoz\s+veszed|adj\s+hozzá|add\s+hozzá|hozzáad|szerzel|jutalm|felveszed|összeszed|zsákmányol|eladod/).test(cLow) && !/lehet\s+nyerni|nyerhetsz|ajánl/.test(cLow);
           const goldLoss = /fizet|kifizet|elveszít|elveszted|veszít|húzz?\s+le|vonj\s+le|vond\s+le|elkér|elvesz|odaadod|átadod|átadsz|odaadsz|adsz\s+(?:neki|oda)|add\s+oda|elfogyaszt|elfogy|megeszel|költs/.test(cLow);
           if (goldGain === goldLoss) continue;
           if (/^\s*(?:—\s*)?(?:ha|amennyiben)\s/.test(cLow) && /fizet|odaadod|átadod/.test(cLow) && targets.length) {
@@ -360,6 +470,32 @@ export function analyzeSection(paras0, n, book = {}) {
           }
           out.effects.push({ type: kind, delta: goldGain ? nAmt : -nAmt, cond: (conditional || hypo) && !when && !whenDice, when: whenDice ? 'dice' : when, dice: whenDice, para: pi, text: g[0], choice: targets.length ? out.choices.length - 1 : null });
         }
+      }
+      // hajónapló (utazási napok), mondatrészenként
+      if (DAY_CTX.test(cLow) || /nyersz\s+\S+\s+napot/.test(cLow)) {
+        for (const seg of cl.text.split(',')) {
+          const d = dayDelta(low(seg));
+          if (!d || HYPO.test(low(seg))) continue;
+          out.effects.push({ type: 'days', delta: d, cond: (conditional || hypo) && !when && !whenDice, when: whenDice ? 'dice' : when, dice: whenDice, para: pi, text: seg.trim(), choice: targets.length ? out.choices.length - 1 : null });
+        }
+      }
+      // rabszolgák (zsákmány): egyszerű darabszámok
+      if (/rabszolg/.test(cLow) && !RECURRING.test(cLow)) {
+        let g;
+        // ha nincs „N rabszolgát”, a később eladandó foglyok száma számít („3 olyan legényt, akit majd a rabszolgapiacon eladtok”)
+        const re = (SLAVE_RE.lastIndex = 0, SLAVE_RE.test(cl.text)) ? SLAVE_RE : CAPTIVE_RE;
+        re.lastIndex = 0;
+        while ((g = re.exec(cl.text))) {
+          const nAmt = toNum(g[1]); if (!nAmt) continue;
+          const gain = /viszel|nyersz|kapsz|kapod|zsákmányol|találsz|találtok|szerzel|elfog|foglyul|ejtesz|megtart|jelöld|jegyezd/.test(cLow);
+          const loss = /\beladod\b|eladtad|eladtál|elveszt|elveszít|odaadod|átadod|elszök|megszök/.test(cLow) && !/majd|később|eladhat|fogsz/.test(cLow);
+          if (gain === loss || /lehet\b|nyerhetsz|tenned|fogadsz|fogadtál/.test(cLow)) continue;
+          out.effects.push({ type: 'slaves', delta: gain ? nAmt : -nAmt, cond: (conditional || hypo) && !when && !whenDice, when: whenDice ? 'dice' : when, dice: whenDice, para: pi, text: g[0], choice: targets.length ? out.choices.length - 1 : null });
+        }
+      }
+      // rabszolgák eladása: „Szorozd meg rabszolgáid számát 8-cal, és a kapott összeget add hozzá Zsákmányodhoz”
+      if (/szorozd\s+meg/.test(cLow) && /rabszolg/.test(cLow)) {
+        for (const tok of cLow.split(/[\s,]+/)) { if (!/(?:tel|tal|vel|val|cal|cel|mal|mel|zal|zel|gyel)$/.test(tok)) continue; const k = MULW(tok); if (k && k > 1) { out.sellSlaves = k; break; } }
       }
       // tárgyak, képességek, jegyzetek – csak javaslat, a játékos hagyja jóvá
       if (/(?:írd|jegyezd|vezesd|vedd)\s+(?:fel|be)\s+(?:a\s+)?kalandlap|kalandlapodra|elteszed|elrakod|magadhoz\s+veszed|zsebre\s+teszed|felveszed|hátizsákodba|tarisznyádba|eltehetsz|elviheted|elvihetsz|megkapod/.test(cLow) && !CURRENCY.test(cLow) && !/élelm|étel|adag/.test(cLow)) {
@@ -378,7 +514,7 @@ export function analyzeSection(paras0, n, book = {}) {
         condCtx = null; ctxEffects.length = 0;
       } else {
         if (ctxApplies) for (let k = effStart; k < out.effects.length; k++) ctxEffects.push(k);
-        const w = whenOf(cLow, hasLuck, hasSkill);
+        const w = whenOf(cLow, hasLuck, hasSkill, vsStat);
         if (startsCond || w) {
           condCtx = { when: w, fresh: true, text: labelOf(cl.text) };
           ctxEffects.length = 0;
@@ -401,7 +537,9 @@ export function analyzeSection(paras0, n, book = {}) {
   // próbák
   if (hasLuck) out.tests.push({ type: 'luck' });
   if (hasSkill) out.tests.push({ type: 'skill' });
-  if (out.choices.some(c => c.kind === 'dice') || (diceN && !out.enemies.length)) out.tests.push({ type: 'dice', n: diceN || 1 });
+  const vsUsed = vsStat && (out.choices.some(c => /^vs_/.test(c.kind)) || out.effects.some(e => /^vs_/.test(e.when || '')));
+  if (vsUsed) out.tests.push({ type: 'vs', n: diceN, stat: vsStat });
+  if (out.choices.some(c => c.kind === 'dice') || out.effects.some(e => e.when === 'dice') || (diceN && !out.enemies.length && !vsUsed)) out.tests.push({ type: 'dice', n: diceN || 1 });
 
   // harc
   if (out.enemies.length) {
@@ -411,7 +549,9 @@ export function analyzeSection(paras0, n, book = {}) {
     if (dmg) mods.dmgToPlayer = +dmg[1];
     const armor = /vértje\s+(\d)-?(?:gyel|vel|el)?\s+csökkenti/i.exec(all);
     if (armor) mods.dmgToEnemy = Math.max(0, 2 - +armor[1]);
-    out.combat = { mode: out.enemies.length > 1 ? (one ? 'one_by_one' : 'simultaneous') : 'single', mods, canFlee: out.choices.some(c => c.kind === 'flee'), noFlee: /nem\s+menekülhetsz/.test(allLow) };
+    // tengeri csata: a legénységek harcolnak (LEGÉNYSÉG ÜTÉSEI az ellenfél ÜTÉSE ellen, a sebek a LEGÉNYSÉG EREJÉT fogyasztják)
+    const crew = out.enemies.every(e => e.crew);
+    out.combat = { mode: out.enemies.length > 1 ? (one ? 'one_by_one' : 'simultaneous') : 'single', mods, canFlee: out.choices.some(c => c.kind === 'flee'), noFlee: /nem\s+menekülhetsz/.test(allLow), crew };
   }
 
   // számbevitel: csak a most érvényes utasítás számít („Ha valaha…” → későbbre szóló jegyzet)
@@ -425,11 +565,19 @@ export function analyzeSection(paras0, n, book = {}) {
     out.numberInput = true;
     if (offset) out.numberOffset = offset;
   }
+  // „Aranyaid számát kerekítsd lefelé a legközelebbi százasra … oszd el 2-vel” – a lapozandó szám az aranyból
+  { let m;
+    if (/kerekítsd\s+le/.test(allLow) && /arany/.test(allLow) && (m = /oszd\s+el\s+(\d+)-?\p{L}*/u.exec(allLow))) {
+      out.goldCalc = { round: /százas/.test(allLow) ? 100 : /tízes/.test(allLow) ? 10 : 1, div: +m[1] };
+      out.numberInput = true;
+    } }
   const deathWords = RX.death.test(allLow);
   if (!out.choices.length) {
     if (book.max && n === book.max) out.victory = true;
     // biztos halál csak a könyv szavaival; különben lehet, hogy csak a lapozási utasítás nem olvasható
     else if (!out.numberInput) { if (deathWords) out.death = true; else out.ending = true; }
+    // nem halál, csak vereség (elvesztett fogadás, hajótörés után nincs tovább)
+    if (out.death && /fogadást\s+elvesztetted|elvesztetted\s+a\s+fogadást|\bvesztettél\b|nem\s+folytathatod/.test(allLow) && !/meghal|halálod|halott/.test(allLow)) out.lost = true;
   }
   out.deathHint = deathWords;
   return out;
@@ -441,7 +589,13 @@ export function detectSetup(front) {
   const t = low(txt);
   const setup = { gold: 0, provisions: 0, mealValue: 4, potions: [], items: [] };
   let m;
-  if ((m = /kezdetben\s+(\d+)\s+arany/.exec(t))) setup.gold = +m[1];
+  if ((m = /kezdetben\s+(\d+)\s+arany/.exec(t)) || (m = /(\d+)\s+arany\s*tallérral\s+kezd/.exec(t))) setup.gold = +m[1];
+  // A Vértengerek: a legénység pontjai, a hajónapló (utazási napok) és a zsákmány (rabszolgák)
+  setup.crew = /legénység\s+ütése/.test(t) && /legénység\s+ereje/.test(t);
+  setup.log = /hajónapló/.test(t);
+  setup.restPerDay = /minden\s+újabb\s+nap[^.]{0,80}növeli\s+életerő/.test(t);
+  setup.slaves = /rabszolg/.test(t);
+  setup.food = /élelm/.test(t);
   if ((m = new RegExp(`${NUM}\\s+étkezésre\\s+elegendő`).exec(t))) setup.provisions = toNum(m[1]);
   else if ((m = new RegExp(`${NUM}\\s+adag\\s+élelm`).exec(t))) setup.provisions = toNum(m[1]);
   if ((m = /minden\s+étkezés\s+(\d+)\s+pontot/.exec(t))) setup.mealValue = +m[1];

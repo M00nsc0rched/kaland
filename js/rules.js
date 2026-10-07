@@ -11,10 +11,18 @@ export function d6() {
 export const roll = n => Array.from({ length: n }, d6);
 export const sum = a => a.reduce((x, y) => x + y, 0);
 
-export function newCharacter() {
+export function newCharacter(opts = {}) {
   const s = roll(1), st = roll(2), l = roll(1);
   const skill = s[0] + 6, stamina = sum(st) + 12, luck = l[0] + 6;
-  return { skill, skillInit: skill, stamina, staminaInit: stamina, luck, luckInit: luck, rolls: { skill: s, stamina: st, luck: l } };
+  const c = { skill, skillInit: skill, stamina, staminaInit: stamina, luck, luckInit: luck, rolls: { skill: s, stamina: st, luck: l } };
+  if (opts.crew) {
+    // A Vértengerek: LEGÉNYSÉG ÜTÉSEI = 1 kocka + 6, LEGÉNYSÉG EREJE = 2 kocka + 6
+    const k = roll(1), e = roll(2);
+    c.strike = c.strikeInit = k[0] + 6;
+    c.crew = c.crewInit = sum(e) + 6;
+    c.rolls.strike = k; c.rolls.crew = e;
+  }
+  return c;
 }
 
 // Szerencsepróba: 2 kocka ≤ SZERENCSE → szerencsés; utána SZERENCSE −1.

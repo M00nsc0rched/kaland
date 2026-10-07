@@ -97,7 +97,7 @@ function classify(page, m) {
     keep(l.b);
   }
   // illusztrációk (az importáló vágja ki őket): olvasási sorrendbe illesztve
-  for (const f of page.figs || []) out.push({ kind: 'fig', y: f.y0, img: f.img, w: f.w, h: f.h });
+  for (const f of page.figs || []) out.push({ kind: 'fig', y: f.y0, img: f.img, w: f.w, h: f.h, full: !!f.full });
   out.sort((a, b) => a.y - b.y);
   return { items: out, head, boxes, medH: m.medH, colL: m.colL, colR: m.colR };
 }
@@ -111,8 +111,9 @@ export function textBoxes(page) {
 
 const UP = 'A-ZÁÉÍÓÖŐÚÜŰ', LO = 'a-záéíóöőúüű';
 const NUMTOK = '[\\dŐő\\[\\]|lIOoSB$]{1,3}';
-const STAT_LINE = new RegExp(`(ÜGYESSÉG|ÉLETERŐ)\\s+${NUMTOK}\\s*$`);
-const STAT_HEAD = /^ÜGYESSÉG\s+ÉLETERŐ\s*$/;
+// (tengeri csatában a legénységek adatsora: „Hadihajó ÜTÉS 10 ERŐ 8”)
+const STAT_LINE = new RegExp(`(ÜGYESSÉG|ÉLETERŐ|ÜTÉS\\s+${NUMTOK}\\s+ERŐ)\\s+${NUMTOK}\\s*$`);
+const STAT_HEAD = /^(?:ÜGYESSÉG\s+ÉLETERŐ|ÜTÉS\s+ERŐ)\s*$/;
 const STAT_ROW = new RegExp(`^\\S.*\\s${NUMTOK}\\s+(${NUMTOK}|\\[\\w\\])\\s*$`);
 const ENDS_TARGET = new RegExp(`\\d{1,3}-?[${LO}]{0,3}[.;!?]$`);
 
@@ -157,7 +158,7 @@ function joinLines(lines) {
 
 // Adatsor számainak OCR-javítása (Ő→6, ]→1 …); a felismerhetetlen marad „?”.
 function cleanStat(t, isHead) {
-  if (isHead) return 'ÜGYESSÉG ÉLETERŐ';
+  if (isHead) return /ÜTÉS/.test(t) ? 'ÜTÉS ERŐ' : 'ÜGYESSÉG ÉLETERŐ';
   return t.replace(new RegExp(`(\\s)(${NUMTOK}|\\[\\w\\])(?=\\s|$)`, 'g'), (m, sp, tok) => {
     const n = ocrNumber(tok);
     return sp + (n == null ? '?' : n);
@@ -197,20 +198,27 @@ export function buildBook(pages, opts = {}) {
   let state = 'pre', cur = 0, curLines = [], frontLines = [], lastSeenHead = null;
   let fallback = null, headsSeen = 0, tail = null; // tail: fej nélküli oldalak pufferje (lehet hátsó anyag)
   const figs = {}; // fejezetpont → illusztrációk (abban a pontban állnak, amelyik szövege előttük van)
+  const frontFigs = []; // az 1. pont előtti képek (térkép, Kalandlap…)
+  const fullFigs = []; // egész oldalas illusztrációk: a szemközti (következő) oldal első pontjához tartoznak
+  const pageFirst = [], pageRun = [], pageHasText = [];
+  let backMatter = false; // a könyv végi kiadói adatok (ISBN, nyomda) és a hátsó borító már nem a történet része
   const addFig = (n, f) => { if (n > 0) (figs[n] = figs[n] || []).push({ img: f.img, w: f.w, h: f.h }); };
   const flush =() => { if (cur > 0) { const paras = joinLines(curLines).map(p => p.t); sections[cur] = (sections[cur] || []).concat(paras); } curLines = []; };
-  for (const page of pages) {
+  pages.forEach((page, pi) => {
     const m = pageMetrics(page, fallback);
     if (m.wideCount >= 3) fallback = { medH: m.medH, colL: m.colL, colR: m.colR };
     const { items, head } = classify(page, m);
+    for (const it of items) it.pi = pi;
     const hdrs = items.filter(i => i.kind === 'hdr');
+    pageRun[pi] = cur;
     if (state === 'pre') {
       // az 1. fejezetpont előtti „próza-oldalak” a bevezető
       const firstHdr = hdrs.find(h => h.num === 1);
       const pre = firstHdr ? items.filter(i => i.y < firstHdr.y) : items;
       const proseLines = pre.filter(i => i.kind === 'text' && (i.x1 - i.x0) > (m.colR - m.colL) * 0.6).length;
       if (proseLines >= 4 || (frontLines.length && proseLines >= 1)) frontLines.push(...pre.filter(i => i.kind !== 'hdr' && i.kind !== 'fig'));
-      if (!firstHdr) continue;
+      for (const f of pre) if (f.kind === 'fig') frontFigs.push({ page: page.n, img: f.img, w: f.w, h: f.h });
+      if (!firstHdr) return;
       state = 'sec';
     } else if (!head && !hdrs.length && headsSeen >= 10) {
       // oldalfej nélküli oldal egy oldalfejes könyvben: illusztráció vagy hátsó anyag – pufferbe
@@ -219,14 +227,14 @@ export function buildBook(pages, opts = {}) {
       tail.lines.push(...items.filter(i => (i.kind === 'text' || i.kind === 'title') && i.conf >= 85));
       tail.figs.push(...items.filter(i => i.kind === 'fig'));
       tail.pages.push(page);
-      continue;
+      return;
     }
     if (head) headsSeen++;
     if (tail) {
       // mégis folytatódik a könyv: a pufferelt sorok (és egész oldalas képek) a folyó ponthoz tartoztak
       if (tail.lines.length) warnings.push(`p${tail.pages.map(p => p.n).join(',')}: oldalfej nélküli oldal(ak) a(z) ${cur}. ponthoz csatolva`);
       curLines.push(...tail.lines);
-      for (const f of tail.figs) addFig(cur, f);
+      for (const f of tail.figs) if (f.full) fullFigs.push(f); else addFig(cur, f);
       tail = null;
     }
     if (head) {
@@ -235,7 +243,13 @@ export function buildBook(pages, opts = {}) {
     }
     for (const it of items) {
       if (state === 'pre') { if (it.kind === 'hdr' && it.num === 1) { state = 'sec'; } else continue; }
-      if (it.kind === 'fig') { addFig(cur, it); continue; }
+      if (backMatter) {
+        // a hátsó anyag után csak a következő fejezetpont fejléce térítene vissza
+        if (it.kind === 'hdr' && it.num === cur + 1) backMatter = false; else continue;
+      }
+      if (it.kind === 'fig') { if (it.full) fullFigs.push(it); else addFig(cur, it); continue; }
+      if (it.kind !== 'hdr' && COLOPHON.test(it.t || '') && cur > 0) { backMatter = true; warnings.push(`p${page.n}: a könyv végi kiadói adatok kihagyva`); continue; }
+      if (it.kind !== 'hdr') pageHasText[pi] = true;
       if (it.kind === 'hdr') {
         if (state === 'pre' || (cur === 0 && it.num !== 1)) continue;
         let n = it.num;
@@ -259,14 +273,22 @@ export function buildBook(pages, opts = {}) {
         }
         flush();
         cur = n;
+        if (pageFirst[pi] == null) pageFirst[pi] = n;
         continue;
       }
       if (cur > 0) curLines.push(it);
     }
     if (head && hdrs.length === 0 && cur && (cur < head.from || cur > head.to)) warnings.push(`p${page.n}: oldalfej ${head.from}-${head.to}, de a folyó pont ${cur}`);
     if (head) for (let k = head.from; k <= head.to; k++) if (k > cur) warnings.push(`p${page.n}: oldalfej szerint ${k} itt kezdődik, de nem találtam a fejlécét`);
-  }
+  });
   flush();
+  // egész oldalas illusztráció: a nyomtatott könyvben a szemközti oldalon kezdődő pontot ábrázolja
+  // (ha ott nem kezdődik pont, akkor az oldalon folytatódót)
+  for (const f of fullFigs) {
+    let n = 0;
+    for (let k = f.pi + 1; k <= f.pi + 2 && k < pages.length && !n; k++) n = pageFirst[k] || (pageHasText[k] ? pageRun[k] : 0);
+    addFig(n || pageRun[f.pi], f);
+  }
   if (tail) for (const p of tail.pages) if (p.conf == null || p.conf < 80) appendixPages.push(p.n);
   // bevezető
   for (const p of joinLines(frontLines)) front.push(p.kind === 'h' ? { h: p.t } : { p: p.t });
@@ -276,8 +298,10 @@ export function buildBook(pages, opts = {}) {
   for (let k = 1; k <= max; k++) if (!sections[k]) missing.push(k);
   if (missing.length) warnings.push(`hiányzó fejezetpontok: ${missing.join(', ')}`);
   for (const k of Object.keys(figs)) if (!sections[k]) delete figs[k];
-  return { front, sections, max, warnings, appendixPages, figs };
+  return { front, sections, max, warnings, appendixPages, figs, frontFigs };
 }
+// a könyv végi kiadói adatok sorai (a hátsó borító szövege utánuk jön)
+const COLOPHON = /^(?:RAKÉTA\s+KÖNYV|.*KÖNYVKIADÓ|Felelős\s+(?:kiadó|vezető|szerkesztő)\s*:|ISBN\s+\d|ISSN\s+\d|Kiadványszám|Műszaki\s+szerkesztő\s*:|.*\bNyomda\s+\d)/;
 
 // PDF szövegréteg → ugyanaz a sor-alak, mint az OCR-é (conf = 100).
 export function textItemsToLines(items, viewport, scale) {

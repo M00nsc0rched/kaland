@@ -1,5 +1,5 @@
 // Kaland · Játék · Kockázat – telefonos lapozgatós játékmotor.
-import { analyzeSection, detectSetup, conditionHint, letterSum, STAT_NAMES } from './analyze.js';
+import { analyzeSection, detectSetup, conditionHint, letterSum, STAT_NAMES, logHolds, logText } from './analyze.js';
 import { newCharacter, testLuck, testSkill, combatRound, roll, sum } from './rules.js';
 import * as store from './store.js';
 import { importFile, validateBook, bookToJson } from './importer.js';
@@ -28,13 +28,17 @@ const hhmm = t => { const d = new Date(t); return `${String(d.getHours()).padSta
 const article = n => (/^(1|5)(\d\d)?$/.test(String(n)) || /^5\d$/.test(String(n)) ? 'az' : 'a');
 const signed = d => (d > 0 ? '+' : '−') + Math.abs(d);
 const cap1 = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-const STAT_SHORT = { skill: 'ÜGY', stamina: 'ÉLET', luck: 'SZER' };
+const STAT_SHORT = { skill: 'ÜGY', stamina: 'ÉLET', luck: 'SZER', strike: 'ÜTÉS', crew: 'LEG' };
+const REL = { lt: 'kevesebb, mint', le: 'legfeljebb annyi, mint', gt: 'több, mint', ge: 'legalább annyi, mint' };
 const dieEl = (v, big) => h('span', { class: 'die' + (big ? ' big' : ''), 'data-v': v, 'aria-label': String(v) }, ...Array.from({ length: 9 }, () => h('i')));
 const diceEl = (vals, big) => h('span', { class: 'dice' }, vals.map(v => dieEl(v, big)));
 const reduced = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } };
 
+// a Beállítások lapon látszik – így ellenőrizhető, hogy a telefonra megérkezett-e a frissítés
+const APP_VERSION = '3 (2026. 10. 07.)';
+
 // ---------- állapot ----------
-const S = { settings: store.loadSettings(), books: [], book: null, save: null, ana: new Map(), sheet: null, importing: null, setup: null, view: 'library' };
+const S = { settings: store.loadSettings(), books: [], book: null, save: null, ana: new Map(), sheet: null, importing: null, setup: null, view: 'library', rules: {} };
 let saveTimer = null;
 function persist() {
   if (!S.book || !S.save) return;
@@ -56,6 +60,7 @@ async function openBook(id) {
   const book = id === DEMO.id ? DEMO : await store.getBook(id);
   if (!book) { toast('A könyv nem található ezen az eszközön.'); return showLibrary(); }
   S.book = book; S.ana = new Map();
+  S.rules = detectSetup(book.front);
   store.setLastBook(id);
   S.save = store.loadSave(id);
   if (!S.save || S.save.v !== 1) S.save = freshSave(book, 1);
@@ -63,22 +68,26 @@ async function openBook(id) {
 }
 function freshSave(book, round, prev) {
   const setup = detectSetup(book.front);
-  return { v: 1, bookId: book.id, round, status: 'setup', c: null, gold: setup.gold, food: setup.provisions, mealValue: setup.mealValue || 4, potion: null, items: [], notes: [], n: 0, trail: [], seen: [], sec: null, log: prev ? prev.log : [], history: prev ? prev.history : [], started: Date.now() };
+  return { v: 1, bookId: book.id, round, status: 'setup', c: null, gold: setup.gold, food: setup.provisions, mealValue: setup.mealValue || 4, potion: null, items: [], notes: [], days: 0, slaves: 0, crewRule: null, n: 0, trail: [], seen: [], sec: null, log: prev ? prev.log : [], history: prev ? prev.history : [], started: Date.now() };
 }
 function startSetup() {
   const setup = detectSetup(S.book.front);
-  S.setup = { c: newCharacter(), setup, potion: setup.potions.length ? null : 'none', rolls: 1 };
+  S.setup = { c: newCharacter({ crew: setup.crew }), setup, potion: setup.potions.length ? null : 'none', rolls: 1 };
   S.view = 'setup'; render(); scrollTop();
 }
+// a könyv használja-e az élelmet (A Vértengerekben nincs)
+const usesFood = () => S.rules.food || S.rules.provisions > 0 || (S.save && S.save.food > 0);
 function beginAdventure() {
   const st = S.setup, sv = S.save;
   sv.c = { skill: st.c.skill, skillInit: st.c.skillInit, stamina: st.c.stamina, staminaInit: st.c.staminaInit, luck: st.c.luck, luckInit: st.c.luckInit };
+  if (st.c.crew != null) Object.assign(sv.c, { strike: st.c.strike, strikeInit: st.c.strikeInit, crew: st.c.crew, crewInit: st.c.crewInit });
   const p = st.setup.potions.find(x => x.id === st.potion);
   sv.potion = p ? { id: p.id, name: p.name, used: false } : null;
   sv.items = st.setup.items.map(name => ({ id: uid(), name, kind: 'item', from: 0 }));
   sv.gold = st.setup.gold; sv.food = st.setup.provisions; sv.mealValue = st.setup.mealValue || 4;
+  sv.days = 0; sv.slaves = 0; sv.crewRule = null;
   sv.status = 'play'; sv.trail = []; sv.seen = []; sv.started = Date.now();
-  log('start', `${sv.round}. kör kezdete. ÜGYESSÉG ${sv.c.skill}, ÉLETERŐ ${sv.c.stamina}, SZERENCSE ${sv.c.luck}` + (p ? `; ital: ${p.name}` : '') + `; ${sv.gold} arany, ${sv.food} adag élelem.`);
+  log('start', `${sv.round}. kör kezdete. ÜGYESSÉG ${sv.c.skill}, ÉLETERŐ ${sv.c.stamina}, SZERENCSE ${sv.c.luck}` + (sv.c.crew != null ? `, LEGÉNYSÉG ÜTÉSEI ${sv.c.strike}, LEGÉNYSÉG EREJE ${sv.c.crew}` : '') + (p ? `; ital: ${p.name}` : '') + `; ${sv.gold} arany` + (usesFood() ? `, ${sv.food} adag élelem` : '') + '.');
   S.setup = null; S.view = 'play';
   enterSection(1, 'start');
 }
@@ -107,17 +116,31 @@ function enterSection(n, how, label) {
   sv.sec = { n, from, applied: {}, undone: {}, tests: {}, combat: null, sel: null, ready: null, manual: false, sugs: {} };
   if (a.enemies.length) {
     const m = a.combat.mods || {};
-    sv.sec.combat = { enemies: a.enemies.map(e => ({ name: e.name, skill: e.skill, stamina: e.stamina, max: e.stamina, dead: false })), mode: a.combat.mode, mods: { skill: m.skill || 0, dmgToPlayer: m.dmgToPlayer || 2, dmgToEnemy: m.dmgToEnemy ?? 2 }, target: 0, rounds: [], last: null, over: false, won: false, lethal: null };
+    sv.sec.combat = { enemies: a.enemies.map(e => ({ name: e.name, skill: e.skill, stamina: e.stamina, max: e.stamina, dead: false })), mode: a.combat.mode, mods: { skill: m.skill || 0, dmgToPlayer: m.dmgToPlayer || 2, dmgToEnemy: m.dmgToEnemy ?? 2 }, target: 0, rounds: [], last: null, over: false, won: false, lethal: null, crew: !!(a.combat.crew && sv.c.crew != null) };
   }
   if (S.settings.autoEffects) {
-    // feltétel nélküli hatások automatikusan (visszavonhatók)
-    a.effects.forEach((e, i) => { if (!e.cond && !e.when && e.choice == null) applyEffect(e, i); });
+    // feltétel nélküli hatások automatikusan (visszavonhatók); a kockával számoltakhoz a játékos dob
+    a.effects.forEach((e, i) => { if (!e.cond && !e.when && e.choice == null && !e.roll) applyEffect(e, i); });
     // a megszerzett tárgyak is felkerülnek (névvel; átnevezhető, törölhető)
     a.suggestions.forEach((s, i) => { if ((s.type === 'item' || s.type === 'ability') && !s.cond && s.name) sv.sec.sugs[i] = addItem(s.name, s.type, null, true); });
   }
+  // hajónapló-elágazás próba nélkül: a napok száma alapján egyetlen választás érvényes – megjelöljük
+  if (!a.tests.length) { const hits = a.choices.map((c, i) => c.kind === 'log' && logHolds(c.log, sv.days || 0) ? i : -1).filter(i => i >= 0); if (hits.length === 1) sv.sec.ready = hits[0]; }
   if (a.victory) { sv.status = 'won'; sv.history.push({ round: sv.round, result: 'győzelem', at: n }); log('win', `Győzelem! A(z) ${sv.round}. kör sikeresen véget ért (${sv.trail.length} fejezetpont).`); }
-  else if (a.death && sv.status === 'play') die('A történet itt véget ért: elbuktál.', true);
+  else if (a.death && sv.status === 'play') die(a.lost ? 'A történet itt véget ért: vesztettél.' : 'A történet itt véget ért: elbuktál.', true, a.lost);
   persist(); render(); scrollTop();
+  return true;
+}
+// választáskor csak az a hatás érvényesül, amelynek a próba-/dobásfeltétele teljesült
+function whenHolds(e) {
+  const t = S.save.sec.tests;
+  if (!e.when) return true;
+  if (e.when === 'dice') return !!(t.dice && e.dice && e.dice.includes(t.dice.total));
+  if (e.when.startsWith('vs_')) return !!(t.vs && t.vs.rels[e.when.slice(3)]);
+  if (e.when === 'luck_yes') return !!(t.luck && t.luck.ok);
+  if (e.when === 'luck_no') return !!(t.luck && !t.luck.ok);
+  if (e.when === 'skill_yes') return !!(t.skill && t.skill.ok);
+  if (e.when === 'skill_no') return !!(t.skill && !t.skill.ok);
   return true;
 }
 // a pontban fel nem írt tárgy-/jegyzetjavaslatok nem vesznek el: a Tárgyak lapon „Felírandó” listába kerülnek
@@ -136,7 +159,7 @@ function confirmChoice(i) {
   const sv = S.save, a = A(sv.n), c = a.choices[i];
   if (!c) return;
   // a választáshoz kötött költség/hatás (pl. „Ha fizetsz 5 Aranytallért…”) – a visszavontat nem alkalmazzuk újra
-  a.effects.forEach((e, k) => { if (e.choice === i && sv.sec.applied[k] == null && !(sv.sec.undone && sv.sec.undone[k])) applyEffect(e, k); });
+  a.effects.forEach((e, k) => { if (e.choice === i && sv.sec.applied[k] == null && !(sv.sec.undone && sv.sec.undone[k]) && (sv.sec.manual || whenHolds(e))) applyEffect(e, k); });
   if (sv.status !== 'play') return render();
   log('choice', `Választás (${i + 1}): ${cap1(c.label) || 'Tovább'}`);
   if (c.kind === 'back') {
@@ -169,7 +192,15 @@ function choiceState(i) {
     if (c.kind === 'luck_yes' || c.kind === 'luck_no') { locked = !t.luck || t.luck.ok !== (c.kind === 'luck_yes'); why = t.luck ? 'A szerencsepróba másképp alakult.' : 'Előbb tedd próbára a SZERENCSÉDET.'; }
     else if (c.kind === 'skill_yes' || c.kind === 'skill_no') { locked = !t.skill || t.skill.ok !== (c.kind === 'skill_yes'); why = t.skill ? 'Az ügyességpróba másképp alakult.' : 'Előbb tedd próbára az ÜGYESSÉGEDET.'; }
     else if (c.kind === 'dice') { locked = !t.dice || !c.dice.includes(t.dice.total); why = t.dice ? 'A dobás eredménye nem ez.' : 'Előbb dobj a kockával.'; }
+    else if (c.kind.startsWith('vs_')) { const vt = a.tests.find(x => x.type === 'vs'); locked = !t.vs || !t.vs.rels[c.kind.slice(3)]; why = t.vs ? 'A dobás eredménye nem ez.' : `Előbb dobj (${vt ? vt.n : 3} kocka, ${STAT_NAMES[vt ? vt.stat : 'crew']}).`; }
+    else if (c.kind === 'log' && c.log) {
+      // ha a pontban előbb dobni kell, és a dobás a napokat is módosítja, csak utána dönthető el
+      const pending = a.tests.some(x => !t[x.type]) && a.effects.some(e => e.type === 'days' && e.when);
+      locked = pending || !logHolds(c.log, sv.days || 0);
+      why = pending ? 'Előbb dobj – a dobás eredménye a HAJÓNAPLÓT is módosítja.' : `A HAJÓNAPLÓ szerint ${sv.days || 0} napnál tartasz – ez nem ${logText(c.log)}.`;
+    }
     else if (c.kind === 'combat_win' && cb) { locked = !cb.won; why = 'Előbb győzd le az ellenfeledet.'; }
+    else if (c.kind === 'flee' && cb && cb.crew && !cb.over && !(cb.last && cb.last.res.hitEnemy)) { locked = true; why = 'Menekülni csak olyan kör után lehet, amelyben a legénységed csapást mért az ellenfélre.'; }
   }
   let hint = null;
   if (c.kind === 'conditional') hint = c.condType === 'notVisited' ? (c.target && sv.seen.includes(c.target) ? { has: false, text: 'ezt már megtetted' } : null) : c.condType === 'gold' ? { has: sv.gold > 0, text: `${sv.gold} aranyad van` } : conditionHint(c.cond, sv.items);
@@ -178,7 +209,7 @@ function choiceState(i) {
 
 // ---------- hatások ----------
 function changeStat(stat, delta, why, opts = {}) {
-  const c = S.save.c; if (!c || !delta) return 0;
+  const c = S.save.c; if (!c || !delta || c[stat] == null) return 0;
   const init = stat + 'Init';
   const before = c[stat];
   let after = before + delta;
@@ -189,12 +220,33 @@ function changeStat(stat, delta, why, opts = {}) {
   if (real || delta) log(delta < 0 ? 'hurt' : 'gain', `${STAT_NAMES[stat]} ${signed(delta)}${real !== delta ? ` (ténylegesen ${signed(real)})` : ''} → ${after}` + (why ? ` – ${why}` : ''));
   flashStat(stat);
   if (stat === 'stamina' && after <= 0 && S.save.status === 'play' && !opts.deferDeath) die('Elfogyott az ÉLETERŐD.');
+  if (stat === 'crew' && after <= 0 && S.save.status === 'play') die('Elfogyott a LEGÉNYSÉGED EREJE: a hajóddal és a legénységeddel együtt odavesztél.');
   return real;
+}
+// hajónapló: minden új nap 1 ÉLETERŐ pontot ad vissza (A Vértengerek szabálya), a Kezdeti értékig
+function changeDays(delta, why) {
+  const sv = S.save, before = sv.days || 0;
+  sv.days = Math.max(0, before + delta);
+  const real = sv.days - before;
+  log('day', `HAJÓNAPLÓ ${signed(delta)} nap → ${sv.days}. nap` + (why ? ` – ${why}` : ''));
+  flashStat('days');
+  let rest = 0;
+  if (real > 0 && S.rules.restPerDay) rest = changeStat('stamina', real, `pihenés (${real} új nap a hajónaplóban)`);
+  return { real, rest };
 }
 function applyEffect(e, idx) {
   const sv = S.save; if (!sv || sv.sec.applied[idx] != null) return;
   let rec = 0;
-  if (e.type === 'stat') rec = changeStat(e.stat, e.delta, `„${e.text}”`);
+  if (e.type === 'stat' && e.roll) {
+    // kockával számolt változás: most dobunk
+    const dice = roll(e.roll), total = sum(dice);
+    log('dice', `Dobás (${e.roll} kocka): ${dice.join('+')}=${total}.`);
+    (sv.sec.rolled = sv.sec.rolled || {})[idx] = dice;
+    rec = changeStat(e.stat, e.delta < 0 ? -total : total, `„${e.text}”`);
+  }
+  else if (e.type === 'stat') rec = changeStat(e.stat, e.delta, `„${e.text}”`);
+  else if (e.type === 'days') rec = changeDays(e.delta, `„${e.text}”`);
+  else if (e.type === 'slaves') { const before = sv.slaves || 0; sv.slaves = Math.max(0, before + e.delta); rec = sv.slaves - before; log(e.delta < 0 ? 'hurt' : 'gain', `Rabszolgák ${signed(e.delta)} → ${sv.slaves}`); }
   else if (e.type === 'initial') {
     const k = e.stat + 'Init';
     sv.c[k] = Math.max(0, sv.c[k] + e.delta);
@@ -213,8 +265,11 @@ function undoEffect(e, idx) {
   delete sv.sec.applied[idx];
   (sv.sec.undone = sv.sec.undone || {})[idx] = true;
   log('manual', `Visszavonva: ${effLabel(e)}`);
+  if (sv.sec.rolled) delete sv.sec.rolled[idx];
   // a pontokat is a szabályos úton állítjuk vissza (Kezdeti érték fölé nem mehet, 0-nál halál)
   if (e.type === 'stat') changeStat(e.stat, -rec, 'visszavonás');
+  else if (e.type === 'days') { sv.days = Math.max(0, (sv.days || 0) - rec.real); if (rec.rest) changeStat('stamina', -rec.rest, 'visszavonás'); flashStat('days'); }
+  else if (e.type === 'slaves') sv.slaves = Math.max(0, (sv.slaves || 0) - rec);
   else if (e.type === 'initial') {
     const k = e.stat + 'Init';
     sv.c[k] = Math.max(0, sv.c[k] - rec.real);
@@ -224,11 +279,11 @@ function undoEffect(e, idx) {
   else if (e.type === 'gold') sv.gold = Math.max(0, sv.gold - rec);
   else if (e.type === 'food') sv.food = Math.max(0, sv.food - rec);
 }
-const effLabel = e => e.type === 'gold' ? `${signed(e.delta)} arany` : e.type === 'food' ? `${signed(e.delta)} élelem` : e.type === 'initial' ? `Kezdeti ${STAT_NAMES[e.stat]} ${signed(e.delta)}` : `${signed(e.delta)} ${STAT_NAMES[e.stat]}`;
-function die(reason, fromText) {
+const effLabel = e => e.roll ? `${e.delta < 0 ? '−' : '+'}${e.roll} kocka ${STAT_NAMES[e.stat]}` : e.type === 'gold' ? `${signed(e.delta)} arany` : e.type === 'food' ? `${signed(e.delta)} élelem` : e.type === 'days' ? `${signed(e.delta)} nap (HAJÓNAPLÓ)` : e.type === 'slaves' ? `${signed(e.delta)} rabszolga` : e.type === 'initial' ? `Kezdeti ${STAT_NAMES[e.stat]} ${signed(e.delta)}` : `${signed(e.delta)} ${STAT_NAMES[e.stat]}`;
+function die(reason, fromText, lost) {
   const sv = S.save; if (sv.status !== 'play') return;
-  sv.status = 'dead';
-  sv.history.push({ round: sv.round, result: 'halál', at: sv.n });
+  sv.status = 'dead'; sv.lost = !!lost;
+  sv.history.push({ round: sv.round, result: lost ? 'vereség' : 'halál', at: sv.n });
   log('death', `${reason} A(z) ${sv.round}. kör véget ért a(z) ${sv.n}. fejezetpontban.`);
   persist();
 }
@@ -257,15 +312,32 @@ function doDice(n) {
   log('dice', `Kockadobás: ${dice.join('+')}${n > 1 ? '=' + total : ''}.`);
   afterTest('dice', null, total);
 }
+// Dobás egy pontszám ellen (A Vértengerek: 3 kocka a LEGÉNYSÉG EREJE ellen; a könyv tartós módosításaival)
+function doVs(stat, n) {
+  const sv = S.save; if (sv.sec.tests.vs) return;
+  const rule = stat === 'crew' ? sv.crewRule || {} : {};
+  const value = sv.c[stat] ?? 0;
+  let dice = [], raw, total;
+  if (rule.auto === 'gt') { raw = total = value + 1; }
+  else { dice = roll(rule.dice || n); raw = sum(dice); total = raw + (rule.mod || 0); }
+  const rels = { lt: total < value, le: total <= value, gt: total > value, ge: total >= value };
+  sv.sec.tests.vs = { dice, raw, total, mod: rule.mod || 0, auto: rule.auto || null, stat, value, rels };
+  log('dice', rule.auto ? `${STAT_NAMES[stat]}-próba: a könyv szerint dobás nélkül nagyobbnak számít (${STAT_NAMES[stat]} ${value}).` : `${STAT_NAMES[stat]}-próba: ${dice.join('+')}=${raw}${rule.mod ? ` ${signed(rule.mod)} = ${total}` : ''} (${STAT_NAMES[stat]} ${value}) – ${total < value ? 'kevesebb' : total === value ? 'ugyanannyi' : 'több'}.`);
+  if (rule.once) { sv.crewRule = null; log('manual', 'Az egyszeri legénységpróba-módosítás felhasználva.'); }
+  afterTest('vs', null, total);
+}
 function afterTest(type, kind, total) {
   const sv = S.save, a = A(sv.n);
+  const vsHit = k => type === 'vs' && k && k.startsWith('vs_') && sv.sec.tests.vs.rels[k.slice(3)];
   // a kimenethez kötött hatások
   if (S.settings.autoEffects) a.effects.forEach((e, i) => {
+    if (e.roll) return;
     if (kind && e.when === kind) applyEffect(e, i);
+    if (vsHit(e.when)) applyEffect(e, i);
     if (type === 'dice' && e.when === 'dice' && e.dice && e.dice.includes(total)) applyEffect(e, i);
   });
   // a kimenet szerinti választás csak megjelölődik; a kijelölés (zöld keret) a játékos első koppintása
-  const hits = a.choices.map((c, i) => ((kind && c.kind === kind) || (type === 'dice' && c.kind === 'dice' && c.dice.includes(total))) ? i : -1).filter(i => i >= 0);
+  const hits = a.choices.map((c, i) => ((kind && c.kind === kind) || vsHit(c.kind) || (type === 'dice' && c.kind === 'dice' && c.dice.includes(total)) || (c.kind === 'log' && logHolds(c.log, sv.days || 0))) ? i : -1).filter(i => i >= 0);
   sv.sec.ready = hits.length === 1 && sv.status === 'play' ? hits[0] : null;
   persist(); render();
   animate(document.querySelector('.mech .result:last-of-type'));
@@ -277,23 +349,26 @@ function attack() {
   if (cb.enemies.some(e => !e.dead && (e.skill == null || e.stamina == null))) { toast('Add meg az ellenfél hiányzó értékeit (a szövegben olvashatatlan volt).'); return; }
   if (cb.lethal) return;
   if (cb.mode !== 'simultaneous' || cb.target < 0 || !cb.enemies[cb.target] || cb.enemies[cb.target].dead) cb.target = cb.enemies.findIndex(e => !e.dead);
-  const res = combatRound(sv.c, cb.enemies, cb.target, { mode: cb.mode, skill: cb.mods.skill });
+  // tengeri csata: a legénység ÜTÉSE harcol, a sebeket a LEGÉNYSÉG EREJE viseli
+  const fighter = cb.crew ? { skill: sv.c.strike } : sv.c;
+  const res = combatRound(fighter, cb.enemies, cb.target, { mode: cb.mode, skill: cb.mods.skill });
   cb.rounds.push(1); const k = cb.rounds.length;
   const parts = [];
   for (const v of res.vs) {
     const e = cb.enemies[v.i];
-    if (v.out === 'hit') { e.stamina = Math.max(0, e.stamina - cb.mods.dmgToEnemy); parts.push(`megsebezted: ${e.name} (${v.eAS}) −${cb.mods.dmgToEnemy} → ${e.stamina}`); }
-    else if (v.out === 'hurt') parts.push(`${e.name} (${v.eAS}) megsebzett`);
+    if (v.out === 'hit') { e.stamina = Math.max(0, e.stamina - cb.mods.dmgToEnemy); parts.push(`${cb.crew ? 'csapást mértetek' : 'megsebezted'}: ${e.name} (${v.eAS}) −${cb.mods.dmgToEnemy} → ${e.stamina}`); }
+    else if (v.out === 'hurt') parts.push(`${e.name} (${v.eAS}) ${cb.crew ? 'csapást mért a legénységedre' : 'megsebzett'}`);
     else if (v.out === 'parry') parts.push(`${e.name} (${v.eAS}) támadását hárítod`);
     else parts.push(`${e.name} (${v.eAS}): kivédtétek egymás csapását`);
   }
   cb.last = { res, k, luck: null, used: { attack: false, defend: 0 } };
-  log('combat', `${k}. harci kör – Támadóerőd ${res.pAS} (${res.pDice.join('+')}+${sv.c.skill}${cb.mods.skill ? signed(cb.mods.skill) : ''}): ${parts.join('; ')}.`);
+  log('combat', `${k}. ${cb.crew ? 'csatakör – a legénység Támadóereje' : 'harci kör – Támadóerőd'} ${res.pAS} (${res.pDice.join('+')}+${fighter.skill}${cb.mods.skill ? signed(cb.mods.skill) : ''}): ${parts.join('; ')}.`);
   for (const v of res.vs) {
     const e = cb.enemies[v.i];
     if (v.out === 'hit' && e.stamina <= 0 && !e.dead) { e.dead = true; log('win', `Legyőzted: ${e.name}.`); }
   }
-  if (res.hurt) {
+  if (res.hurt && cb.crew) changeStat('crew', -cb.mods.dmgToPlayer * res.hurt, 'tengeri csata');
+  else if (res.hurt) {
     // halálos seb: előbb a szabály szerinti szerencsepróba (enyhébb seb) felajánlása, csak utána a halál
     const dmg = cb.mods.dmgToPlayer * res.hurt, after = sv.c.stamina - dmg;
     const offer = after <= 0 && sv.c.luck > 0;
@@ -348,6 +423,18 @@ function acceptLethal() {
   cb.lethal = null; die('Elestél a harcban.'); persist(); render();
 }
 function fleeDialog(i) {
+  const cb = S.save.sec.combat;
+  if (cb && cb.crew) {
+    // tengeri csata: a menekülés büntetése 2 LEGÉNYSÉG ERŐ pont
+    return modal('Menekülés', 'A menekülésért 2 pont levonás jár a LEGÉNYSÉGED EREJÉBŐL.', [['Mégse', null], ['Menekülök', 'y']]).then(v => {
+      if (!v) return;
+      const sv = S.save;
+      sv.sec.fleePaid = true;
+      log('combat', 'A hajóddal elmenekültél a csatából.');
+      changeStat('crew', -2, 'menekülés');
+      if (sv.status === 'play') confirmChoice(i); else { persist(); render(); }
+    });
+  }
   modal('Menekülés', 'Ha elmenekülsz, ellenfeled még egyszer lesújt: vesztesz 2 ÉLETERŐ pontot. Szerencsepróbával csökkentheted (szerencsével −1, balszerencsével −3).', [
     ['Mégse', null], ['Szerencsepróbával', 'luck'], ['Menekülök', 'plain'],
   ]).then(v => {
@@ -440,9 +527,12 @@ function renderBar() {
   const sv = S.save;
   if (S.view === 'play' && sv && sv.c) {
     bar.append(h('div', { class: 'runhead', 'aria-live': 'polite' }, `§ ${sv.n}`, h('small', null, `${sv.round}. kör`)));
-    const st = (k, lbl, low) => h('span', { class: 'stat' + (low ? ' low' : ''), 'data-stat': k }, h('b', null, sv.c[k]), h('i', null, lbl));
-    bar.append(h('button', { class: 'stats', 'aria-label': `Kalandlap: ÜGYESSÉG ${sv.c.skill}, ÉLETERŐ ${sv.c.stamina}, SZERENCSE ${sv.c.luck}`, onclick: () => openSheet('kalandlap') },
-      st('skill', 'ügy'), st('stamina', 'élet', sv.c.stamina <= 4), st('luck', 'szer')));
+    const st = (k, lbl, low, v) => h('span', { class: 'stat' + (low ? ' low' : ''), 'data-stat': k }, h('b', null, v ?? sv.c[k]), h('i', null, lbl));
+    // A Vértengerek: a legénység ereje és a hajónapló napjai is a fejlécben
+    const crew = sv.c.crew != null, days = S.rules.log;
+    bar.append(h('button', { class: 'stats' + (crew || days ? ' compact' : ''), 'aria-label': `Kalandlap: ÜGYESSÉG ${sv.c.skill}, ÉLETERŐ ${sv.c.stamina}, SZERENCSE ${sv.c.luck}` + (crew ? `, LEGÉNYSÉG EREJE ${sv.c.crew}` : '') + (days ? `, ${sv.days || 0}. nap` : ''), onclick: () => openSheet('kalandlap') },
+      st('skill', 'ügy'), st('stamina', 'élet', sv.c.stamina <= 4), st('luck', 'szer'),
+      crew ? st('crew', 'leg', sv.c.crew <= 4) : null, days ? st('days', 'nap', false, sv.days || 0) : null));
   } else {
     bar.append(h('div', { class: 'runhead' }, S.view === 'setup' ? 'Kalandlap' : 'Könyvtár'));
   }
@@ -468,24 +558,25 @@ function renderSection(page, dock) {
   const sv = S.save, a = A(sv.n), sec = sv.sec;
   const wrap = h('div', { class: 'sheet-inner' });
   wrap.append(h('h2', { class: 'secno' }, `${sv.n}.`));
+  // a könyv illusztrációi ehhez a ponthoz – a szöveg előtt, hogy görgetés nélkül is látszódjanak
+  const figs = S.settings.showFigs !== false && S.book.figs && S.book.figs[sv.n];
+  if (figs && figs.length) for (const f of figs) wrap.append(figEl(f, sv.n));
   const states = a.choices.map((c, i) => choiceState(i));
   const prose = h('div', { class: 'prose', style: `--text:${S.settings.textSize}px` });
   let prevStat = false;
   for (const p of a.paras) {
-    if (p.kind === 'stat') { prose.append(h('div', { class: 'foe' }, h('em', null, p.name), h('span', { html: `<span class="sc">ÜGYESSÉG</span> ${esc(p.skill)}` }), h('span', { html: `<span class="sc">ÉLETERŐ</span> ${esc(p.stamina)}` }))); prevStat = true; continue; }
-    if (p.kind === 'thead') { prose.append(h('div', { class: 'foe-head' }, h('span'), h('span', { class: 'sc' }, 'ÜGYESSÉG'), h('span', { class: 'sc' }, 'ÉLETERŐ'))); continue; }
+    const [w1, w2] = p.crew ? ['ÜTÉS', 'ERŐ'] : ['ÜGYESSÉG', 'ÉLETERŐ'];
+    if (p.kind === 'stat') { prose.append(h('div', { class: 'foe' }, h('em', null, p.name), h('span', { html: `<span class="sc">${w1}</span> ${esc(p.skill)}` }), h('span', { html: `<span class="sc">${w2}</span> ${esc(p.stamina)}` }))); prevStat = true; continue; }
+    if (p.kind === 'thead') { prose.append(h('div', { class: 'foe-head' }, h('span'), h('span', { class: 'sc' }, w1), h('span', { class: 'sc' }, w2))); continue; }
     if (p.kind === 'trow') { prose.append(h('div', { class: 'foe frow' }, h('em', null, p.name), h('span', null, p.skill), h('span', null, p.stamina))); prevStat = true; continue; }
     prose.append(h('p', { class: prevStat ? 'cont' : null, html: paraHtml(p, states, sec.sel) }));
     prevStat = false;
   }
   prose.addEventListener('click', ev => { const o = ev.target.closest('.opt'); if (o) onKey(+o.dataset.c); });
   wrap.append(prose);
-  // a könyv illusztrációi ehhez a ponthoz
-  const figs = S.settings.showFigs !== false && S.book.figs && S.book.figs[sv.n];
-  if (figs && figs.length) for (const f of figs) wrap.append(figEl(f, sv.n));
   const mech = renderMech(a, sv);
   if (mech.childElementCount) wrap.append(mech);
-  if (sv.status === 'dead') wrap.append(h('div', { class: 'ending' }, h('b', null, 'Meghaltál. '), 'Ez a kör véget ért. Az eseménynaplóban visszanézheted, mi történt.'));
+  if (sv.status === 'dead') wrap.append(h('div', { class: 'ending' }, h('b', null, sv.lost ? 'Vesztettél. ' : 'Meghaltál. '), 'Ez a kör véget ért. Az eseménynaplóban visszanézheted, mi történt.'));
   if (sv.status === 'won') wrap.append(h('div', { class: 'ending won' }, h('b', null, 'Győztél! '), 'Végigjártad a kalandot.'));
   page.append(wrap);
   renderDock(dock, a, sv, states);
@@ -498,11 +589,18 @@ function renderMech(a, sv) {
   if (t.luck) mech.append(h('div', { class: 'panel' }, h('h4', null, 'Szerencsepróba'), h('div', { class: 'result' }, diceEl(t.luck.dice), h('span', null, `= ${t.luck.total} (SZERENCSE ${t.luck.before})`), h('span', { class: 'verdict ' + (t.luck.ok ? 'ok' : 'no') }, t.luck.ok ? 'Szerencsés vagy!' : 'Nincs szerencséd.'))));
   if (t.skill) mech.append(h('div', { class: 'panel' }, h('h4', null, 'Ügyességpróba'), h('div', { class: 'result' }, diceEl(t.skill.dice), h('span', null, `= ${t.skill.total} (ÜGYESSÉG ${t.skill.before})`), h('span', { class: 'verdict ' + (t.skill.ok ? 'ok' : 'no') }, t.skill.ok ? 'Sikeres!' : 'Sikertelen.'))));
   if (t.dice) mech.append(h('div', { class: 'panel' }, h('h4', null, 'Kockadobás'), h('div', { class: 'result' }, diceEl(t.dice.dice), t.dice.dice.length > 1 ? h('span', null, `= ${t.dice.total}`) : null)));
+  if (t.vs) {
+    const v = t.vs, cmp = v.total < v.value ? 'kevesebb' : v.total === v.value ? 'ugyanannyi' : 'több';
+    mech.append(h('div', { class: 'panel' }, h('h4', null, `Dobás a ${STAT_NAMES[v.stat]} ellen`), h('div', { class: 'result' },
+      v.auto ? h('span', null, 'Dobás nélkül: nagyobbnak számít') : diceEl(v.dice), v.auto ? null : h('span', null, `= ${v.raw}${v.mod ? ` ${signed(v.mod)} = ${v.total}` : ''}`),
+      h('span', { class: 'verdict' }, `${cmp}, mint ${v.value}`))));
+  }
   // harc
   const cb = sec.combat;
   if (cb) {
     const panel = h('div', { class: 'panel' });
-    panel.append(h('h4', null, cb.over ? 'Harc – vége' : cb.mode === 'simultaneous' ? 'Harc – egyszerre támadnak (koppints a célpontra)' : cb.mode === 'one_by_one' ? 'Harc – egyesével' : 'Harc'));
+    const fw = cb.crew ? ['ÜTÉS', 'ERŐ'] : ['ÜGY', 'ÉLET'];
+    panel.append(h('h4', null, cb.crew ? (cb.over ? 'Tengeri csata – vége' : `Tengeri csata – legénységed: ÜTÉS ${sv.c.strike}, ERŐ ${sv.c.crew}`) : cb.over ? 'Harc – vége' : cb.mode === 'simultaneous' ? 'Harc – egyszerre támadnak (koppints a célpontra)' : cb.mode === 'one_by_one' ? 'Harc – egyesével' : 'Harc'));
     const foes = h('div', { class: 'foes' });
     cb.enemies.forEach((e, i) => {
       const pct = e.max ? Math.max(0, Math.min(100, (e.stamina / e.max) * 100)) : 0;
@@ -510,7 +608,7 @@ function renderMech(a, sv) {
       foes.append(h('div', { class: 'foecard' + (e.dead ? ' dead' : '') + (i === cb.target && !cb.over && cb.mode === 'simultaneous' ? ' target' : ''), onclick: () => { if (!e.dead && cb.mode === 'simultaneous') { cb.target = i; persist(); render(); } } },
         h('span', { class: 'nm' }, e.name),
         missing ? h('span', { class: 'nums' }, h('button', { class: 'mini', onclick: ev => { ev.stopPropagation(); editFoe(i); } }, 'Értékek megadása'))
-          : h('span', { class: 'nums' }, `ÜGY ${e.skill} · ÉLET ${e.stamina}`, ' ', h('span', { class: 'adj' },
+          : h('span', { class: 'nums' }, `${fw[0]} ${e.skill} · ${fw[1]} ${e.stamina}`, ' ', h('span', { class: 'adj' },
             h('button', { 'aria-label': `${e.name} ÉLETERŐ −1`, onclick: ev => { ev.stopPropagation(); e.stamina = Math.max(0, e.stamina - 1); log('manual', `Kézi módosítás: ${e.name} ÉLETERŐ −1 → ${e.stamina}.`); if (e.stamina <= 0 && !e.dead) { e.dead = true; log('win', `Legyőzted: ${e.name} (kézi).`); } checkCombatEnd(); persist(); render(); } }, '−'),
             h('button', { 'aria-label': `${e.name} ÉLETERŐ +1`, onclick: ev => { ev.stopPropagation(); e.stamina += 1; log('manual', `Kézi módosítás: ${e.name} ÉLETERŐ +1 → ${e.stamina}.`); if (e.dead && e.stamina > 0) { e.dead = false; cb.over = false; cb.won = false; if (cb.target < 0) cb.target = i; } persist(); render(); } }, '+'))),
         h('div', { class: 'bar' }, h('i', { style: `width:${pct}%` }))));
@@ -534,15 +632,34 @@ function renderMech(a, sv) {
   a.effects.forEach((e, i) => {
     const applied = sec.applied[i] != null;
     if (e.when && !applied) {
-      const done = (e.when === 'dice' && t.dice) || (e.when.startsWith('luck') && t.luck) || (e.when.startsWith('skill') && t.skill);
-      const matches = done && ((e.when === 'dice' && e.dice.includes(t.dice.total)) || (e.when === 'luck_yes' && t.luck && t.luck.ok) || (e.when === 'luck_no' && t.luck && !t.luck.ok) || (e.when === 'skill_yes' && t.skill && t.skill.ok) || (e.when === 'skill_no' && t.skill && !t.skill.ok));
-      if (done && !matches) return;
+      const done = (e.when === 'dice' && t.dice) || (e.when.startsWith('vs_') && t.vs) || (e.when.startsWith('luck') && t.luck) || (e.when.startsWith('skill') && t.skill);
+      if (done && !whenHolds(e)) return;
     }
-    if (e.choice != null && !applied) return; // választáskor érvényesül
-    const label = effLabel(e);
+    if (e.choice != null && !applied && !e.roll) return; // választáskor érvényesül
+    const rolled = sec.rolled && sec.rolled[i];
+    const label = applied && e.roll ? `${signed(sec.applied[i])} ${STAT_NAMES[e.stat]} (${rolled ? rolled.join('+') : e.roll + ' kocka'})` : effLabel(e);
     chips.push(h('button', { class: 'chip' + (applied ? ' on' : ''), title: e.text, onclick: () => { if (sv.status !== 'play') return; if (applied) undoEffect(e, i); else applyEffect(e, i); persist(); render(); } },
-      applied ? `✓ ${label}` : `${label}`, h('span', { class: 'x' }, applied ? 'visszavon' : (e.when ? 'próbától függ' : 'alkalmaz'))));
+      applied ? `✓ ${label}` : `${label}`, h('span', { class: 'x' }, applied ? 'visszavon' : e.roll ? 'dobás' : (e.when ? 'próbától függ' : 'alkalmaz'))));
   });
+  // A Vértengerek: rabszolgák eladása a pontban megadott áron
+  if (a.sellSlaves && sv.status === 'play') {
+    const sold = sec.sold;
+    chips.push(h('button', { class: 'chip' + (sold ? ' on' : ''), onclick: () => {
+      if (sold) { sv.gold = Math.max(0, sv.gold - sold.gold); sv.slaves += sold.n; sec.sold = null; log('manual', `Visszavonva: rabszolgák eladása (${sold.n} fő).`); }
+      else { const n = sv.slaves || 0; if (!n) return toast('Nincs eladható rabszolgád.'); const g = n * a.sellSlaves; sv.gold += g; sv.slaves = 0; sec.sold = { n, gold: g }; log('gain', `Rabszolgák eladása: ${n} × ${a.sellSlaves} = ${g} Arany Tallér → ${sv.gold}.`); }
+      persist(); render();
+    } }, sold ? `✓ ${sold.n} rabszolga eladva: +${sold.gold} arany` : `Rabszolgák eladása (${sv.slaves || 0} × ${a.sellSlaves} arany)`, h('span', { class: 'x' }, sold ? 'visszavon' : 'elad')));
+  }
+  // A Vértengerek: tartós szabály a legénységpróbákhoz
+  if (a.crewRule && sv.status === 'play') {
+    const r = a.crewRule, on = sec.ruleSet;
+    const what = r.auto ? 'dobás nélkül „nagyobb”' : [r.dice ? `${r.dice} kocka` : null, r.mod ? `${signed(r.mod)} az összegből` : null].filter(Boolean).join(', ');
+    chips.push(h('button', { class: 'chip' + (on ? ' on' : ''), title: r.text, onclick: () => {
+      if (on) { sv.crewRule = sec.prevRule || null; sec.ruleSet = false; log('manual', 'Legénységpróba-szabály visszavonva.'); }
+      else { sec.prevRule = sv.crewRule; sv.crewRule = { ...(sv.crewRule || {}), ...r }; sec.ruleSet = true; log('note', `Legénységpróba ${r.once ? 'legközelebb' : 'mostantól'}: ${what}.`); }
+      persist(); render();
+    } }, `${on ? '✓ ' : ''}Legénységpróba ${r.once ? 'legközelebb' : 'mostantól'}: ${what}`, h('span', { class: 'x' }, on ? 'visszavon' : r.cond ? 'ha érvényes' : 'alkalmaz')));
+  }
   if (chips.length) mech.append(h('div', { class: 'panel' }, h('h4', null, 'Változások'), h('div', { class: 'chips' }, chips)));
   // javaslatok: tárgy, képesség, jegyzet, használat
   const sugs = [];
@@ -574,13 +691,13 @@ function renderDock(dock, a, sv, states) {
   if (sv.status === 'dead' || sv.status === 'won') {
     const won = sv.status === 'won';
     dock.append(h('div', { class: 'endbox' },
-      h('h3', null, won ? 'Győzelem!' : 'Meghaltál'),
+      h('h3', null, won ? 'Győzelem!' : sv.lost ? 'Vesztettél' : 'Meghaltál'),
       h('p', null, won ? `A(z) ${sv.round}. kör sikerrel zárult.` : `A(z) ${sv.round}. kör véget ért a(z) ${sv.n}. fejezetpontban.`),
       h('div', { class: 'acts' },
         undoJumpButton(sv),
         h('button', { class: 'act quiet', onclick: () => openSheet('naplo') }, 'Eseménynapló'),
         h('button', { class: 'act', onclick: () => newRound() }, 'Új kör'))));
-    announce(won ? 'Győzelem!' : 'Meghaltál. A kör véget ért.');
+    announce(won ? 'Győzelem!' : sv.lost ? 'Vesztettél. A kör véget ért.' : 'Meghaltál. A kör véget ért.');
     return;
   }
   const sec = sv.sec, cb = sec.combat, t = sec.tests;
@@ -613,11 +730,12 @@ function renderDock(dock, a, sv, states) {
   for (const tt of a.tests) {
     if (tt.type === 'luck' && !t.luck) acts.append(h('button', { class: 'act', onclick: doLuck }, 'Szerencsepróba'));
     if (tt.type === 'skill' && !t.skill) acts.append(h('button', { class: 'act', onclick: doSkill }, 'Ügyességpróba'));
-    if (tt.type === 'dice' && !t.dice) acts.append(h('button', { class: 'act', onclick: () => doDice(tt.n) }, tt.n > 1 ? 'Dobás (2 kocka)' : 'Dobás (1 kocka)'));
+    if (tt.type === 'dice' && !t.dice) acts.append(h('button', { class: 'act', onclick: () => doDice(tt.n) }, `Dobás (${tt.n} kocka)`));
+    if (tt.type === 'vs' && !t.vs) { const r = tt.stat === 'crew' && sv.crewRule ? sv.crewRule : null; acts.append(h('button', { class: 'act', onclick: () => doVs(tt.stat, tt.n) }, `Dobás (${r && r.dice ? r.dice : tt.n} kocka${r && r.mod ? ` ${signed(r.mod)}` : ''}) – ${STAT_NAMES[tt.stat]} ${sv.c[tt.stat] ?? '?'}`)); }
   }
   if (cb && !cb.over) {
-    acts.append(h('button', { class: 'act', onclick: attack }, cb.rounds.length ? 'Következő kör' : 'Harc: támadás'));
-    if (cb.last) {
+    acts.append(h('button', { class: 'act', onclick: attack }, cb.rounds.length ? 'Következő kör' : cb.crew ? 'Tengeri csata: támadás' : 'Harc: támadás'));
+    if (cb.last && !cb.crew) {
       const r = cb.last.res, used = cb.last.used || { attack: !!cb.last.luck, defend: cb.last.luck ? r.hurt : 0 };
       const tgt = cb.enemies[r.target];
       if (r.hitEnemy && !used.attack && tgt && !tgt.dead) acts.append(h('button', { class: 'act quiet', onclick: () => combatLuck('attack') }, 'Szerencse: súlyosabb seb'));
@@ -625,7 +743,7 @@ function renderDock(dock, a, sv, states) {
     }
   }
   const stuck = !a.choices.length && (a.numberInput || a.ending);
-  if (a.numberInput || stuck) acts.append(h('button', { class: 'act' + (a.choices.length ? ' quiet' : ''), onclick: () => openJump(null, null, a.numberOffset) }, 'Számra lapozok'));
+  if (a.numberInput || stuck) acts.append(h('button', { class: 'act' + (a.choices.length ? ' quiet' : ''), onclick: () => openJump(a.goldCalc ? goldCalcText(a.goldCalc) : null, a.goldCalc ? [goldCalcValue(a.goldCalc)] : null, a.numberOffset) }, 'Számra lapozok'));
   if (stuck) acts.append(h('button', { class: 'act danger', onclick: () => modal('Feladod?', a.numberInput ? 'Ha nem tudod a választ, a kalandod itt véget ér.' : 'A kör itt véget ér.', [['Mégse', null], ['Feladom', 'y']]).then(v => { if (v) { die(a.numberInput ? 'Nem találtad meg a megoldást.' : 'A történet itt véget ért.'); render(); } }) }, 'Feladom'));
   const uj = undoJumpButton(sv); if (uj) acts.append(uj);
   if (acts.childElementCount) dock.append(acts);
@@ -712,6 +830,7 @@ function renderLibrary(page, dock) {
       h('button', { class: 'btn pri go', onclick: () => openBook(b.id) }, sv && sv.status === 'play' ? 'Folytatás' : 'Megnyitás'),
       b.demo ? null : h('div', { class: 'more' },
         h('button', { class: 'btn', onclick: () => exportBook(b.id) }, 'Mentés fájlba (.kjk.json)'),
+        h('button', { class: 'btn', onclick: () => renameBook(b.id) }, 'Átnevezés'),
         h('button', { class: 'btn red', onclick: () => modal('Könyv törlése', `Törlöd erről az eszközről: „${b.title}”? A mentett állás is törlődik.`, [['Mégse', null], ['Törlés', 'y']]).then(async v => { if (v) { await store.deleteBook(b.id); showLibrary(); } }) }, 'Törlés'))));
   }
   wrap.append(books);
@@ -751,6 +870,15 @@ async function doImport(file) {
     else modal('Nem sikerült betölteni', (e && e.message) || String(e), [['Rendben', 'ok']]);
   }
 }
+async function renameBook(id) {
+  const b = await store.getBook(id); if (!b) return;
+  const inp = h('input', { class: 'field', id: 'rename-book', value: b.title });
+  const v = await modal('Könyv átnevezése', inp, [['Mégse', null], ['Mentés', 'ok']], () => inp.focus());
+  const t = inp.value.trim();
+  if (!v || !t || t === b.title) return;
+  b.title = t; await store.putBook(b);
+  S.books = await store.listBooks(); render();
+}
 async function exportBook(id) {
   const b = await store.getBook(id); if (!b) return;
   const data = bookToJson(b), filename = `${b.title.replace(/[\\/:*?"<>|]+/g, '').slice(0, 60)}.kjk.json`;
@@ -775,14 +903,16 @@ function renderSetup(page, dock) {
   const rolls = h('div', { class: 'rolls' },
     row('ÜGYESSÉG', '1 kocka + 6', c.rolls.skill, c.skill),
     row('ÉLETERŐ', '2 kocka + 12', c.rolls.stamina, c.stamina),
-    row('SZERENCSE', '1 kocka + 6', c.rolls.luck, c.luck));
+    row('SZERENCSE', '1 kocka + 6', c.rolls.luck, c.luck),
+    c.crew != null ? row('LEGÉNYSÉG ÜTÉSEI', '1 kocka + 6', c.rolls.strike, c.strike) : null,
+    c.crew != null ? row('LEGÉNYSÉG EREJE', '2 kocka + 6', c.rolls.crew, c.crew) : null);
   wrap.append(rolls);
-  wrap.append(h('div', { class: 'row', style: 'margin:10px 0 18px' }, h('button', { class: 'btn', onclick: () => { st.c = newCharacter(); st.rolls++; render(); animate(document.querySelector('.rolls')); } }, 'Újradobás'), h('span', { class: 'muted' }, st.rolls > 1 ? `${st.rolls}. dobás` : '')));
+  wrap.append(h('div', { class: 'row', style: 'margin:10px 0 18px' }, h('button', { class: 'btn', onclick: () => { st.c = newCharacter({ crew: sp.crew }); st.rolls++; render(); animate(document.querySelector('.rolls')); } }, 'Újradobás'), h('span', { class: 'muted' }, st.rolls > 1 ? `${st.rolls}. dobás` : '')));
   if (sp.potions.length) {
     wrap.append(h('h5', { class: 'muted', style: 'margin:0 0 8px;letter-spacing:.1em;text-transform:uppercase' }, 'Válassz egy italt'));
     wrap.append(h('div', { class: 'potions' }, sp.potions.map(p => h('button', { class: 'potion' + (st.potion === p.id ? ' sel' : ''), 'aria-pressed': st.potion === p.id ? 'true' : 'false', onclick: () => { st.potion = p.id; render(); } }, h('b', null, p.name), h('span', { html: caps(esc(p.desc)) })))));
   }
-  const gear = [...sp.items, sp.gold ? `${sp.gold} Aranytallér` : null, sp.provisions ? `${sp.provisions} adag élelem (+${sp.mealValue} ÉLETERŐ étkezésenként)` : null].filter(Boolean);
+  const gear = [...sp.items, sp.gold ? `${sp.gold} Arany Tallér` : null, sp.provisions ? `${sp.provisions} adag élelem (+${sp.mealValue} ÉLETERŐ étkezésenként)` : null, sp.log ? 'hajónapló (0. nap)' : null].filter(Boolean);
   if (gear.length) wrap.append(h('p', { class: 'muted', style: 'margin-top:16px' }, 'Felszerelés: ' + gear.join(', ') + '.'));
   wrap.append(h('p', null, h('button', { class: 'btn', onclick: () => openSheet('bevezeto') }, 'Bevezető és szabályok')));
   page.append(wrap);
@@ -842,10 +972,17 @@ const SHEETS = {
     const box = (k, lbl) => h('div', { class: 'sbox' }, h('span', { class: 'lbl' }, lbl), h('span', { class: 'val' }, c[k]), h('span', { class: 'ini' }, `Kezdeti: ${c[k + 'Init']}`),
       h('span', { class: 'adj' }, h('button', { 'aria-label': lbl + ' −1', onclick: () => { changeStat(k, -1, 'kézi módosítás'); persist(); render(); rerenderSheet(); } }, '−'), h('button', { 'aria-label': lbl + ' +1', onclick: () => { changeStat(k, 1, 'kézi módosítás', { overInit: true }); persist(); render(); rerenderSheet(); } }, '+')));
     b.append(h('div', { class: 'statgrid' }, box('skill', 'Ügyesség'), box('stamina', 'Életerő'), box('luck', 'Szerencse')));
-    b.append(h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, 'Arany: '), `${sv.gold} Aranytallér`), h('span', { class: 'adj' },
-      h('button', { onclick: () => { sv.gold = Math.max(0, sv.gold - 1); log('manual', `Arany −1 → ${sv.gold}`); persist(); rerenderSheet(); } }, '−'), h('button', { onclick: () => { sv.gold++; log('manual', `Arany +1 → ${sv.gold}`); persist(); rerenderSheet(); } }, '+'))));
-    b.append(h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, 'Élelem: '), `${sv.food} adag (+${sv.mealValue} ÉLETERŐ)`), h('button', { class: 'btn', disabled: sv.food <= 0 || sv.status !== 'play', onclick: eat }, 'Étkezés'),
-      h('span', { class: 'adj' }, h('button', { onclick: () => { sv.food = Math.max(0, sv.food - 1); log('manual', `Élelem −1 → ${sv.food}`); persist(); rerenderSheet(); } }, '−'), h('button', { onclick: () => { sv.food++; log('manual', `Élelem +1 → ${sv.food}`); persist(); rerenderSheet(); } }, '+'))));
+    if (c.crew != null) b.append(h('div', { class: 'statgrid two' }, box('strike', 'Legénység ütései'), box('crew', 'Legénység ereje')));
+    // számlálók: arany, (élelem), hajónapló, rabszolgák – kézzel is igazíthatók
+    const counter = (label, val, dec, inc, extra) => h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, label + ': '), val), extra || null,
+      h('span', { class: 'adj' }, h('button', { 'aria-label': label + ' −1', onclick: () => { dec(); persist(); render(); rerenderSheet(); } }, '−'), h('button', { 'aria-label': label + ' +1', onclick: () => { inc(); persist(); render(); rerenderSheet(); } }, '+')));
+    b.append(counter('Arany', `${sv.gold} Arany Tallér`, () => { sv.gold = Math.max(0, sv.gold - 1); log('manual', `Arany −1 → ${sv.gold}`); }, () => { sv.gold++; log('manual', `Arany +1 → ${sv.gold}`); }));
+    if (usesFood()) b.append(counter('Élelem', `${sv.food} adag (+${sv.mealValue} ÉLETERŐ)`, () => { sv.food = Math.max(0, sv.food - 1); log('manual', `Élelem −1 → ${sv.food}`); }, () => { sv.food++; log('manual', `Élelem +1 → ${sv.food}`); },
+      h('button', { class: 'btn', disabled: sv.food <= 0 || sv.status !== 'play', onclick: eat }, 'Étkezés')));
+    if (S.rules.log) b.append(counter('Hajónapló', `${sv.days || 0}. nap` + (S.rules.restPerDay ? ' (minden új nap +1 ÉLETERŐ)' : ''), () => changeDays(-1, 'kézi módosítás'), () => changeDays(1, 'kézi módosítás')));
+    if (S.rules.slaves) b.append(counter('Rabszolgák', `${sv.slaves || 0} fő`, () => { sv.slaves = Math.max(0, (sv.slaves || 0) - 1); log('manual', `Rabszolgák −1 → ${sv.slaves}`); }, () => { sv.slaves = (sv.slaves || 0) + 1; log('manual', `Rabszolgák +1 → ${sv.slaves}`); }));
+    if (sv.crewRule) b.append(h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, 'Legénységpróba: '), sv.crewRule.auto ? 'dobás nélkül „nagyobb”' : [sv.crewRule.dice ? `${sv.crewRule.dice} kocka` : null, sv.crewRule.mod ? `${signed(sv.crewRule.mod)} az összegből` : null].filter(Boolean).join(', ') + (sv.crewRule.once ? ' (egyszer)' : '')),
+      h('button', { class: 'btn red', onclick: () => { sv.crewRule = null; log('manual', 'Legénységpróba-módosítás törölve.'); persist(); render(); rerenderSheet(); } }, 'Törlés')));
     if (sv.potion) b.append(h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, 'Ital: '), sv.potion.name + (sv.potion.used ? ' (elfogyott)' : '')), h('button', { class: 'btn', disabled: sv.potion.used || sv.status !== 'play', onclick: () => modal('Ital', `Megiszod: ${sv.potion.name}?`, [['Mégse', null], ['Megiszom', 'y']]).then(v => { if (v) drinkPotion(); }) }, 'Megiszom')));
     b.append(h('p', { class: 'muted' }, `${S.book.title} · ${sv.round}. kör · ${sv.trail.length} meglátogatott fejezetpont`));
     return 'Kalandlap';
@@ -860,8 +997,9 @@ const SHEETS = {
       h('button', { class: 'btn red', onclick: () => removeItem(it.id) }, 'Törlés'));
     // minden megszerzett dolog egy helyen: pénz, élelem, ital is
     b.append(h('div', { class: 'list' },
-      h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, `${sv.gold} Aranytallér`))),
-      h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, `${sv.food} adag élelem`), h('span', { class: 'meta' }, ` · +${sv.mealValue} ÉLETERŐ`)), h('button', { class: 'btn', disabled: sv.food <= 0 || sv.status !== 'play', onclick: eat }, 'Étkezés')),
+      h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, `${sv.gold} Arany Tallér`))),
+      S.rules.slaves ? h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, `${sv.slaves || 0} rabszolga`), h('span', { class: 'meta' }, ' · zsákmány'))) : null,
+      usesFood() ? h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, `${sv.food} adag élelem`), h('span', { class: 'meta' }, ` · +${sv.mealValue} ÉLETERŐ`)), h('button', { class: 'btn', disabled: sv.food <= 0 || sv.status !== 'play', onclick: eat }, 'Étkezés')) : null,
       sv.potion ? h('div', { class: 'li' }, h('span', { class: 'nm' }, h('b', null, sv.potion.name), sv.potion.used ? h('span', { class: 'meta' }, ' · elfogyott') : null)) : null));
     const pend = (sv.pending || []);
     if (pend.length) {
@@ -923,7 +1061,7 @@ const SHEETS = {
     return 'Képek';
   },
   melleklet(b) {
-    for (const a of S.book.appendix || []) b.append(h('img', { class: 'appimg', src: a.img, alt: `Melléklet – ${a.page}. oldal` }));
+    for (const a of S.book.appendix || []) b.append(h('button', { class: 'figbtn', 'aria-label': `Melléklet – ${a.page}. oldal, nagyítás`, onclick: () => viewImage(a.img, `Melléklet – ${a.page}. oldal`) }, h('img', { class: 'appimg', src: a.img, alt: `Melléklet – ${a.page}. oldal`, loading: 'lazy' })));
     b.append(h('p', { class: 'muted' }, 'A titkos fejezetpontokhoz: a „Lapozás számra” lapon a betű–szám átváltás is megtalálható (A=1 … Z=26).'));
     return 'Mellékletek';
   },
@@ -956,12 +1094,17 @@ const SHEETS = {
     const auto = h('input', { type: 'checkbox', id: 'set-auto', checked: st.autoEffects, onchange: ev => { st.autoEffects = ev.target.checked; store.writeSettings(st); } });
     b.append(h('label', { class: 'li' }, h('span', { class: 'nm' }, 'Pontváltozások automatikus alkalmazása', h('br'), h('span', { class: 'muted' }, 'A feltétel nélküli „Vesztesz 2 ÉLETERŐ pontot” jellegű utasításokat a játék magától végrehajtja (visszavonható).')), auto));
     const figs = h('input', { type: 'checkbox', id: 'set-figs', checked: st.showFigs !== false, onchange: ev => { st.showFigs = ev.target.checked; store.writeSettings(st); render(); } });
-    b.append(h('label', { class: 'li' }, h('span', { class: 'nm' }, 'Illusztrációk megjelenítése', h('br'), h('span', { class: 'muted' }, 'A könyv képei a fejezetpont szövege után. (A PDF-ből beolvasott könyveknél.)')), figs));
+    b.append(h('label', { class: 'li' }, h('span', { class: 'nm' }, 'Illusztrációk megjelenítése', h('br'), h('span', { class: 'muted' }, 'A könyv képei a fejezetpont szövege előtt; koppintásra nagyíthatók. (A PDF-ből beolvasott könyveknél.)')), figs));
     b.append(h('p', { class: 'muted' }, 'A könyvek és a mentett állások ezen az eszközön, ebben a böngészőben tárolódnak.'));
+    b.append(h('p', { class: 'muted' }, `Alkalmazás-változat: ${APP_VERSION}`));
     return 'Beállítások';
   },
 };
 function openJump(msg, cands, offset) { openSheet('jump', { msg, cands, offset }); }
+// „Aranyaid számát kerekítsd lefelé a legközelebbi százasra, és oszd el 2-vel” – a játék kiszámolja
+const goldRounded = g => Math.floor((S.save.gold || 0) / g.round) * g.round;
+const goldCalcValue = g => Math.max(1, Math.min(S.book.max, Math.floor(goldRounded(g) / g.div)));
+const goldCalcText = g => `Aranyad: ${S.save.gold || 0} → lekerekítve ${goldRounded(g)} → ${g.div}-vel osztva ${Math.floor(goldRounded(g) / g.div)}` + (Math.floor(goldRounded(g) / g.div) > S.book.max ? ` (nagyobb, mint ${S.book.max}, ezért a ${S.book.max}. pont)` : '') + '.';
 
 async function editItemDialog(name, kind) {
   const inp = h('input', { class: 'field', id: 'item-name', value: name || '' });
