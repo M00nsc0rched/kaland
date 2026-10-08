@@ -5,6 +5,15 @@ import * as store from './store.js';
 import { importFile, validateBook, bookToJson } from './importer.js';
 import { DEMO } from './demo.js';
 
+// Alaptörténetek: minden eszközön ott vannak a Könyvtárban (félkövér címmel), mint a próbakaland.
+// A szerzői jogvédett könyvek titkosítva vannak (alap/*.kjke); a feloldást az alap.js végzi, amelyet
+// csak akkor töltünk be, amikor kell (így egy félig frissült gyorsítótár sem akadályozza az indulást).
+const BASE = [
+  { id: DEMO.id, title: DEMO.title, max: DEMO.max, builtin: true },
+  { id: 'b13wymcr', title: 'A Vértengerek', max: 400, figs: 31, file: 'alap/vertengerek-v1.kjke', size: 5985304, v: 1 },
+];
+const baseOf = id => BASE.find(b => b.id === id) || null;
+
 // ---------- apró segédek ----------
 const $ = s => document.querySelector(s);
 function h(tag, attrs, ...kids) {
@@ -35,7 +44,7 @@ const diceEl = (vals, big) => h('span', { class: 'dice' }, vals.map(v => dieEl(v
 const reduced = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } };
 
 // a Beállítások lapon látszik – így ellenőrizhető, hogy a telefonra megérkezett-e a frissítés
-const APP_VERSION = '3 (2026. 10. 07.)';
+const APP_VERSION = '4 (2026. 10. 08.)';
 
 // ---------- állapot ----------
 const S = { settings: store.loadSettings(), books: [], book: null, save: null, ana: new Map(), sheet: null, importing: null, setup: null, view: 'library', rules: {} };
@@ -57,7 +66,12 @@ function log(k, m, extra) {
 
 // ---------- könyv megnyitása, új kör ----------
 async function openBook(id) {
-  const book = id === DEMO.id ? DEMO : await store.getBook(id);
+  // egy alaptörténet letöltése közben nem nyílik más könyv (különben a letöltés végén átváltana)
+  if (unlocking || S.importing) { toast('Előbb várd meg a betöltést, vagy szakítsd meg a Könyvtárban.'); return; }
+  const base = baseOf(id);
+  let book = id === DEMO.id ? DEMO : await store.getBook(id);
+  // alaptörténet, amely ezen az eszközön még nincs meg: letöltés és feloldás (egyszer)
+  if (!book && base && base.file) { book = await unlockBase(base); if (!book) { render(); return; } }
   if (!book) { toast('A könyv nem található ezen az eszközön.'); return showLibrary(); }
   S.book = book; S.ana = new Map();
   S.rules = detectSetup(book.front);
@@ -806,6 +820,73 @@ function installHint() {
     h('span', { class: 'muted', html: 'Safariban koppints a <span class="shr" aria-hidden="true"></span> Megosztás gombra, majd a „Főképernyőhöz adás” pontra. Így teljes képernyőn, internet nélkül is indul, és a mentéseid megmaradnak.' }));
 }
 
+// ---------- alaptörténetek feloldása ----------
+let unlocking = false;
+async function unlockBase(base) {
+  if (unlocking || S.importing) return null; // egyszerre csak egy betöltés futhat (közös haladásjelző panel)
+  unlocking = true;
+  // a Könyvtárban haladásjelző panel (Megszakítás gombbal) mutatja a letöltést és a feloldást
+  const ctrl = new AbortController();
+  S.importing = { name: base.title, msg: 'Letöltés…', pct: 2, ctrl, unlock: true };
+  render();
+  const prog = (msg, pct) => {
+    if (!S.importing) return;
+    S.importing.msg = msg; if (pct != null) S.importing.pct = pct;
+    const bar = document.getElementById('imp-bar'), m = document.getElementById('imp-msg');
+    if (bar) bar.style.width = S.importing.pct + '%';
+    if (m) m.textContent = msg;
+  };
+  const fail = (title, e) => modal(title, (e && e.message) || String(e), [['Rendben', 'ok']]);
+  const stopped = () => { if (!ctrl.signal.aborted) return false; toast('A feloldás megszakítva.'); return true; };
+  try {
+    // ha a modul betöltése egyszer nem sikerült, a böngésző megjegyzi a hibát – másodszorra más címen próbáljuk
+    let A;
+    try { A = await import('./alap.js'); }
+    catch { try { A = await import(`./alap.js?r=${Date.now()}`); } catch { await fail('Nem sikerült megnyitni', new Error('Az első megnyitáshoz internet kell.')); return null; } }
+    // előbb a letöltés: ha nincs internet, ne kelljen hiába beírni a kulcsot
+    let bytes;
+    try { bytes = await A.fetchBase(base, f => prog(`Letöltés: ${Math.round(f * 100)}% (kb. ${Math.round((base.size || 0) / 1e6)} MB)`, 2 + Math.round(f * 86)), ctrl.signal); }
+    catch (e) { if (e && e.name === 'AbortError') { toast('A letöltés megszakítva.'); return null; } await fail('Nem sikerült letölteni', e); return null; }
+    let key = A.savedKey(), err = '', raw = null;
+    for (;;) {
+      if (stopped()) return null;
+      if (!key) { prog('A kulcsra vár…'); key = await askKey(base, err, A.normKey); if (!key) return null; }
+      prog('Feloldás…', 92);
+      try { raw = await A.decryptBook(bytes, key); break; }
+      catch (e) {
+        if (!(e instanceof A.BadKey)) { await fail('Nem sikerült megnyitni', e); return null; }
+        err = 'Ez a kulcs nem nyitja a könyvet. Ellenőrizd, és írd be újra.'; key = '';
+      }
+    }
+    let book;
+    try { book = validateBook(raw); } catch (e) { await fail('Nem sikerült megnyitni', e); return null; }
+    book.id = base.id; book.title = base.title; book.baseV = base.v || 1;
+    A.saveKey(key); // a többi alaptörténethez is ez a kulcs: itt többé nem kell beírni
+    if (stopped()) return null;
+    prog('Mentés az eszközre…', 97);
+    const ok = await store.putBook(book);
+    S.books = await store.listBooks();
+    toast(ok ? `${base.title}: feloldva. Mostantól internet nélkül is megnyílik.` : `${base.title}: feloldva, de a böngésző nem engedte tartósan menteni – újraindítás után ismét le kell tölteni.`);
+    return book;
+  } catch (e) { await fail('Nem sikerült megnyitni', e); return null; }
+  finally { unlocking = false; S.importing = null; }
+}
+function askKey(base, err, normKey) {
+  const inp = h('input', { class: 'field', id: 'base-key', placeholder: 'XXXX-XXXX-XXXX', autocapitalize: 'characters', autocomplete: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'done', style: 'letter-spacing:.08em;text-transform:uppercase' });
+  const body = h('div', { style: 'display:grid;gap:10px' },
+    err ? h('div', { class: 'warn', role: 'alert' }, err) : null,
+    h('span', null, `A(z) „${base.title}” alaptörténet. A könyvek szövege szerzői jog alatt áll, ezért csak titkosítva van az alkalmazásban. A kulcsot itt egyszer kell beírnod; utána internet nélkül is megnyílik.`),
+    inp);
+  // Enter csak a saját ablak gombját nyomja meg (alatta nyitva maradhatott egy másik párbeszédablak)
+  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { const m = inp.closest('.modal'), b = m && m.querySelector('.btn.pri'); if (b) b.click(); } });
+  return modal('Kulcs az alaptörténetekhez', body, [['Mégse', null], ['Feloldás', 'ok']], () => inp.focus()).then(v => {
+    const k = normKey(inp.value);
+    if (!v) return null;
+    if (k.length !== 12) return askKey(base, 'A kulcs 12 jelből áll (pl. ABCD-EFGH-JKMN).', normKey);
+    return k;
+  });
+}
+
 // ---------- könyvtár ----------
 async function showLibrary() { S.view = 'library'; S.books = await store.listBooks(); closeDrawer(); closeSheet(); render(); scrollTop(); }
 function renderLibrary(page, dock) {
@@ -815,25 +896,33 @@ function renderLibrary(page, dock) {
   const ih = installHint(); if (ih) wrap.append(ih);
   if (S.importing) {
     const im = S.importing;
-    wrap.append(h('div', { class: 'panel', style: 'display:grid;gap:8px' }, h('b', null, im.name), h('div', { class: 'prog' }, h('i', { style: `width:${im.pct || 2}%` })), h('div', { class: 'muted' }, im.msg + (im.eta ? ` · kb. ${Math.ceil(im.eta / 60)} perc van hátra` : '')),
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => im.ctrl.abort() }, 'Megszakítás')), h('div', { class: 'muted' }, 'A felismerés közben maradjon nyitva ez az oldal.')));
+    wrap.append(h('div', { class: 'panel', style: 'display:grid;gap:8px' }, h('b', null, im.name), h('div', { class: 'prog' }, h('i', { id: 'imp-bar', style: `width:${im.pct || 2}%` })), h('div', { class: 'muted', id: 'imp-msg' }, im.msg + (im.eta ? ` · kb. ${Math.ceil(im.eta / 60)} perc van hátra` : '')),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => im.ctrl.abort() }, 'Megszakítás')), h('div', { class: 'muted' }, im.unlock ? 'A letöltés közben maradjon előtérben az alkalmazás.' : 'A felismerés közben maradjon nyitva ez az oldal.')));
   }
-  const books = h('div', { class: 'books' });
-  const all = [{ id: DEMO.id, title: DEMO.title, max: DEMO.max, demo: true }, ...S.books];
-  for (const b of all) {
+  // alaptörténetek (minden eszközön ott vannak, félkövér címmel), utána a saját, csak ezen az eszközön tárolt könyvek
+  const statusOf = sv => !sv ? 'Még nem játszottad' : sv.status === 'setup' ? `${sv.round}. kör – karakteralkotás` : sv.status === 'play' ? `${sv.round}. kör – a ${sv.n}. pontnál tartasz` : sv.status === 'dead' ? `${sv.round}. kör – ${sv.lost ? 'vesztettél' : 'meghaltál'}` : `${sv.round}. kör – győzelem`;
+  const row = (b, base) => {
     const sv = store.loadSave(b.id);
-    const status = !sv ? 'Még nem játszottad' : sv.status === 'setup' ? `${sv.round}. kör – karakteralkotás` : sv.status === 'play' ? `${sv.round}. kör – a ${sv.n}. pontnál tartasz` : sv.status === 'dead' ? `${sv.round}. kör – meghaltál` : `${sv.round}. kör – győzelem`;
-    books.append(h('div', { class: 'book' + (b.cover ? ' has-cover' : '') },
-      b.cover ? h('img', { class: 'cover', src: b.cover, alt: '', width: 48, height: 77 }) : null,
-      h('div', { class: 't' }, b.title),
-      h('div', { class: 's' }, `${b.max} fejezetpont${b.figs ? ` · ${b.figs} kép` : ''} · ${status}`),
-      h('button', { class: 'btn pri go', onclick: () => openBook(b.id) }, sv && sv.status === 'play' ? 'Folytatás' : 'Megnyitás'),
-      b.demo ? null : h('div', { class: 'more' },
+    const local = base && !base.builtin ? S.books.find(x => x.id === b.id) : null;
+    const cover = base ? local && local.cover : b.cover, figs = (local && local.figs) || b.figs;
+    const where = !base ? ' · csak ezen az eszközön' : base.file && !local ? ` · első megnyitáskor letöltődik (kb. ${Math.round((base.size || 0) / 1e6)} MB)` : '';
+    return h('div', { class: 'book' + (base ? ' base' : '') + (cover ? ' has-cover' : '') },
+      cover ? h('img', { class: 'cover', src: cover, alt: '', width: 48, height: 77 }) : null,
+      h('div', { class: 't' }, base ? base.title : b.title),
+      h('div', { class: 's' }, `${b.max} fejezetpont${figs ? ` · ${figs} kép` : ''} · ${statusOf(sv)}${where}`),
+      h('button', { class: 'btn pri go', disabled: !!S.importing, onclick: () => openBook(b.id) }, sv && sv.status === 'play' ? 'Folytatás' : 'Megnyitás'),
+      base ? null : h('div', { class: 'more' },
         h('button', { class: 'btn', onclick: () => exportBook(b.id) }, 'Mentés fájlba (.kjk.json)'),
         h('button', { class: 'btn', onclick: () => renameBook(b.id) }, 'Átnevezés'),
-        h('button', { class: 'btn red', onclick: () => modal('Könyv törlése', `Törlöd erről az eszközről: „${b.title}”? A mentett állás is törlődik.`, [['Mégse', null], ['Törlés', 'y']]).then(async v => { if (v) { await store.deleteBook(b.id); showLibrary(); } }) }, 'Törlés'))));
+        h('button', { class: 'btn red', onclick: () => modal('Könyv törlése', `Törlöd erről az eszközről: „${b.title}”? A mentett állás is törlődik.`, [['Mégse', null], ['Törlés', 'y']]).then(async v => { if (v) { await store.deleteBook(b.id); showLibrary(); } }) }, 'Törlés')));
+  };
+  wrap.append(h('h2', { class: 'libsec' }, 'Alaptörténetek'));
+  wrap.append(h('div', { class: 'books' }, BASE.map(b => row(b, b))));
+  const own = S.books.filter(b => !baseOf(b.id));
+  if (own.length) {
+    wrap.append(h('h2', { class: 'libsec' }, 'Saját könyveid', h('small', null, ' – csak ezen az eszközön')));
+    wrap.append(h('div', { class: 'books' }, own.map(b => row(b, null))));
   }
-  wrap.append(books);
   const file = h('input', { type: 'file', id: 'bookfile', accept: '.pdf,.json,application/pdf,application/json', hidden: true, onchange: ev => { const f = ev.target.files[0]; ev.target.value = ''; if (f) doImport(f); } });
   wrap.append(h('div', { class: 'drop' },
     h('b', null, 'Könyv betöltése'),
@@ -852,7 +941,7 @@ async function doImport(file) {
       S.importing.msg = p.msg || S.importing.msg;
       if (p.total) S.importing.pct = Math.round(p.page / p.total * 96) + 2;
       S.importing.eta = p.eta || 0;
-      const bar = document.querySelector('.prog > i'), m = document.querySelector('.lib .panel .muted');
+      const bar = document.getElementById('imp-bar'), m = document.getElementById('imp-msg');
       if (bar) bar.style.width = S.importing.pct + '%';
       if (m) m.textContent = S.importing.msg + (S.importing.eta ? ` · kb. ${Math.ceil(S.importing.eta / 60)} perc van hátra` : '');
     }, ctrl.signal);

@@ -1,10 +1,10 @@
 // Offline-működés: az alkalmazás saját fájljai internet mellett mindig frissen jönnek a hálózatról
 // (így egy új kiadás azonnal megérkezik), internet nélkül a gyorsítótárból indulnak.
 // Új kiadásnál a VERSION értékét növelni kell.
-const VERSION = 'kjk-v3';
+const VERSION = 'kjk-v4';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/analyze.js', 'js/rules.js', 'js/store.js', 'js/importer.js', 'js/layout.js', 'js/demo.js',
+  'js/app.js', 'js/analyze.js', 'js/rules.js', 'js/store.js', 'js/importer.js', 'js/layout.js', 'js/demo.js', 'js/alap.js',
   'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 const RUNTIME = 'kjk-rt'; // a CDN-könyvtárak kiadásonként nem töltődnek le újra
@@ -25,6 +25,9 @@ self.addEventListener('fetch', ev => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin === location.origin) {
+    // a titkosított alaptörténetek (több MB) a böngészőn át mennek: feloldás után úgyis az eszközön tárolódnak,
+    // és a lassú letöltést nem szabad a lenti időkorláttal megszakítani
+    if (/\/alap\/[^/]+\.kjke$/.test(url.pathname)) return;
     ev.respondWith((async () => {
       const cache = await caches.open(VERSION);
       const nav = req.mode === 'navigate';

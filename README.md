@@ -14,9 +14,21 @@ a tárgyakat és az eseménynaplót a játék vezeti.
 
 Androidon a Chrome menüjében az „Alkalmazás telepítése” pont ugyanezt teszi.
 
+## Alaptörténetek
+
+A Könyvtár tetején álló, **félkövér című** alaptörténetek minden eszközön ott vannak:
+
+- **A Sólyomkő-torony (próbakaland)** – beépített, saját szöveg, könyv nélkül kipróbálható.
+- **A Vértengerek** – a könyv szövege szerzői jog alatt áll, ezért csak titkosítva van a tárolóban
+  (`alap/*.kjke`, AES-256-GCM). Az első megnyitáskor a játék letölti, és egyszer elkéri a kulcsot;
+  utána a könyv az eszközön marad, és internet nélkül is megnyílik. A kulcsot a tároló tulajdonosa őrzi.
+
+A **saját könyveid** (amit te töltesz be) sima betűvel látszanak, és csak azon az eszközön maradnak,
+ahol betöltötted.
+
 ## Könyv betöltése
 
-A könyvek **nem részei** ennek a tárolónak. A zagor.hu
+A könyvek nyílt szövege **nem része** ennek a tárolónak. A zagor.hu
 [letöltések oldaláról](https://zagor.hu/index.php?oldal=letoltes) letöltött PDF-et a
 **Könyv betöltése** gombbal töltheted be:
 
